@@ -1,23 +1,40 @@
+from __future__ import annotations
+
+from typing import Any, Dict
+
 from bluesky_queueserver_api.zmq import REManagerAPI
 
+
 class QServerAPI(REManagerAPI):
-    """API for Bluesky QServer."""
-    _client: REManagerAPI = None
-    _status: dict = {}
-    _connected: bool = False
+    """API wrapper that handles connection state tracking for Bluesky QServer."""
 
-    def __init__(self, zmq_control_address: str, zmq_info_address: str, **kwargs):
-        self._client = REManagerAPI(zmq_control_address, zmq_info_address, **kwargs)
-        self._status = self.update_status()
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._status: Dict[str, Any] = {}
+        self._connected: bool = False
+        self.update_status()
 
-    def update_status(self):
-        if self._client is not None:
-            try:
-                status = self._client.status()
-                self._status = status
-                self._connected = True
-            except Exception as e:
-                print(f"Error fetching status: {e}")
-                self._connected = False
-                self._status = None
-    
+    def update_status(self) -> Dict[str, Any]:
+        try:
+            status = self.status()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error fetching status: {exc}")
+            self._connected = False
+            self._status = {}
+        else:
+            self._status = status
+            self._connected = True
+        return self._status
+
+    def get_status(self) -> Dict[str, Any]:
+        return self.update_status()
+
+    def get_queue(self) -> Dict[str, Any]:
+        try:
+            queue = self.queue_get()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error fetching queue: {exc}")
+            self._connected = False
+            return {}
+        self._connected = True
+        return queue
