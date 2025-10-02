@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import pathlib
 import importlib
 from typing import Callable, Iterable, List, Optional, Sequence
@@ -206,7 +207,17 @@ def register_default_widgets(
         def ensure_controller() -> QServerController:
             nonlocal _qserver_controller
             if _qserver_controller is None:
-                api = QServerAPI()
+                control_address = os.getenv("QSERVER_ZMQ_CONTROL_ADDRESS")
+                info_address = os.getenv("QSERVER_ZMQ_INFO_ADDRESS")
+                if not control_address or not info_address:
+                    raise RuntimeError(
+                        "QServer ZMQ environment variables 'QSERVER_ZMQ_CONTROL_ADDRESS' and "
+                        "'QSERVER_ZMQ_INFO_ADDRESS' must be set."
+                    )
+                api = QServerAPI(
+                    zmq_control_address=control_address,
+                    zmq_info_address=info_address,
+                )
                 _qserver_controller = QServerController(api=api, poll_interval_ms=qserver_poll_interval)
             return _qserver_controller
 

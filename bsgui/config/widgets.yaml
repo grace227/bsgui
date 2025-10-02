@@ -103,14 +103,10 @@ tabs:
         show_activity_indicator: true
         show_percentage: true
       client:
-        type: http
+        type: zmq
         endpoints:
-          api_url: http://localhost:60610/api
-          ws_url: ws://localhost:60610/api/ws
-        authentication:
-          mode: token
-          token_env_var: QSERVER_TOKEN
-          refresh_interval_s: 300
+          info_env_var: QSERVER_ZMQ_INFO_ADDRESS
+          control_env_var: QSERVER_ZMQ_CONTROL_ADDRESS
       columns:
         - id: plan
           label: Plan

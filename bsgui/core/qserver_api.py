@@ -6,8 +6,8 @@ class QServerAPI(REManagerAPI):
     _status: dict = {}
     _connected: bool = False
 
-    def __init__(self, *args, **kwargs):
-        self._client = REManagerAPI(*args, **kwargs)
+    def __init__(self, zmq_control_address: str, zmq_info_address: str, **kwargs):
+        self._client = REManagerAPI(zmq_control_address, zmq_info_address, **kwargs)
         self._status = self.update_status()
 
     def update_status(self):
