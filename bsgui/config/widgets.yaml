@@ -1,0 +1,135 @@
+# Complete tab and widget configuration for the Beamline Control GUI.
+
+app:
+  title: Beamline Control
+  window_size: [1200, 800]
+  toolbar:
+    enabled: true
+    actions:
+      - id: open_xrf_file
+        text: Open XRF File…
+        shortcut: Ctrl+O
+        tooltip: Select an XRF data file to visualize
+        target_widget: scan_setup
+
+tabs:
+  - key: scan_setup
+    title: Scan Setup
+    description: Configure XRF and/or Ptychography loaders that share a plotting canvas.
+    start_expanded: true
+    options:
+      loaders:
+        xrf:
+          enabled: true
+          loader_path: "mic_vis.common.load_xrf:load_h5_file"
+          search_paths:
+            - ./data/img.dat
+          file_patterns:
+            - "*.h5"
+            - "*.h50"
+            - "*.h51"
+            - "*.h52"
+            - "*.h53"
+            - "*.h54"
+            - "*.h55"
+            - "*.h56"
+            - "*.h57"
+          elements:
+            - Total_Fluores
+        ptycho:
+          enabled: true
+          search_paths:
+            - ./data/ptycho
+      plan_editor:
+        enabled: true
+        kinds:
+          - plan
+          - instruction
+        plans:
+          - kind: plan
+            name: fly2d_scanrecord
+            description: Example scan plan
+            parameters:
+              - name: samplename
+                default: smp1
+              - name: width_mm
+                default: 0.0
+
+      queue_status:
+        enabled: true
+        layout_slot: queue_status
+
+      layout:
+        type: grid
+        components:
+          loader_panel:
+            row: 0
+            column: 0
+            row_span: 1
+            column_span: 2
+          plan_editor:
+            row: 1
+            column: 2
+            row_span: 3
+            column_span: 1
+          queue_status:
+            row: 0
+            column: 2
+            row_span: 1
+            column_span: 1
+          canvas:
+            row: 1
+            column: 0
+            row_span: 3
+            column_span: 2
+        row_stretch:
+          "0": 0
+          "1": 1
+          "2": 1
+        column_stretch:
+          "0": 1
+          "1": 1
+          "2": 0
+
+  - key: qserver
+    title: Queue Monitor
+    description: Monitor Bluesky Queue Server status, pending plans, and progress.
+    start_expanded: true
+    options:
+      poll_interval_ms: 2000
+      auto_connect: true
+      show_completed_limit: 15
+      progress:
+        show_activity_indicator: true
+        show_percentage: true
+      client:
+        type: http
+        endpoints:
+          api_url: http://localhost:60610/api
+          ws_url: ws://localhost:60610/api/ws
+        authentication:
+          mode: token
+          token_env_var: QSERVER_TOKEN
+          refresh_interval_s: 300
+      columns:
+        - id: plan
+          label: Plan
+          stretch: true
+        - id: args
+          label: Arguments
+          stretch: true
+        - id: state
+          label: State
+          stretch: false
+
+layout:
+  type: tabs
+  tab_order:
+    - scan_setup
+    - qserver
+  status_bar:
+    enabled: true
+    messages:
+      idle: Ready.
+      loading_data: Loading data file…
+      queue_refresh: Updating queue status…
