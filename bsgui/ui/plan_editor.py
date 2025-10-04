@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Mapping, Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QRadioButton,
     QTableWidget,
@@ -20,37 +22,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..core.qserver_controller import PlanDefinition, PlanParameter
 
-@dataclass(frozen=True)
-class PlanParameter:
-    """Metadata describing a single plan parameter."""
-
-    name: str
-    default: object | None = None
-    required: bool = False
-    description: str | None = None
-
-    def default_as_text(self) -> str:
-        if self.default is None:
-            return "None (default)"
-        return repr(self.default)
-
-
-@dataclass(frozen=True)
-class PlanDefinition:
-    """Representation of a plan or instruction exposed by QServer."""
-
-    name: str
-    kind: str  # "plan" or "instruction"
-    parameters: Sequence[PlanParameter]
-    description: str | None = None
-
-
-class PlanCatalogClient(Protocol):
-    """Protocol for clients that can fetch plan definitions from QServer."""
-
-    def fetch_definitions(self, kind: str) -> Sequence[PlanDefinition]:
-        ...
+if TYPE_CHECKING:  # pragma: no cover - typing helper
+    from ..core.qserver_controller import QServerController
 
 
 class PlanEditorWidget(QWidget):
@@ -61,18 +36,28 @@ class PlanEditorWidget(QWidget):
     def __init__(
         self,
         *,
-        client: Optional[PlanCatalogClient] = None,
+        controller: Optional["QServerController"] = None,
         kinds: Optional[Sequence[str]] = None,
+        kind_overrides: Optional[Mapping[str, Iterable[dict]]] = None,
+        roi_key_map: Optional[Mapping[str, object]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
+
         super().__init__(parent)
-        self._client = client
+        self._controller = controller
         self._kinds = list(kinds) if kinds else ["plan", "instruction"]
-        if not self._kinds:
-            self._kinds = ["plan"]
-        self._definitions: Dict[str, List[PlanDefinition]] = {kind: [] for kind in self._kinds}
+        self._definitions: List[PlanDefinition] = []
+        self._extra_parameters: Dict[str, List[PlanParameter]] = {}
+        if isinstance(kind_overrides, Mapping):
+            for kind in self._kinds:
+                self._extra_parameters[kind] = self._convert_extra_parameters(kind_overrides.get(kind, []))
+        else:
+            for kind in self._kinds:
+                self._extra_parameters[kind] = []
         self._selected_dataset: Dict[str, object] | None = None
-        self._roi_regions: List[dict] = []
+        # self._roi_regions: List[dict] = []
+        self._parameter_rows: Dict[str, tuple[QCheckBox, QLineEdit, PlanParameter, str, str]] = {}
+        self._roi_key_map = self._normalize_key_map(roi_key_map)
 
         self._tabs = QTabWidget()
         self._tabs.addTab(self._build_plan_editor_panel(), "Bluesky Plan")
@@ -81,8 +66,8 @@ class PlanEditorWidget(QWidget):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.addWidget(self._tabs)
 
-        if self._client is not None:
-            self.refresh_from_client()
+        if self._controller is not None:
+            self.refresh_from_controller()
 
     def _build_plan_editor_panel(self) -> QWidget:
         widget = QWidget()
@@ -95,7 +80,6 @@ class PlanEditorWidget(QWidget):
         selector_layout.setSpacing(12)
         self._kind_group = QButtonGroup(self)
         self._kind_buttons: Dict[str, QRadioButton] = {}
-        print(f"self._kinds: {self._kinds}")
         for index, kind in enumerate(self._kinds):
             label = kind.replace("_", " ").title()
             button = QRadioButton(label)
@@ -120,7 +104,7 @@ class PlanEditorWidget(QWidget):
         self._parameter_table.horizontalHeader().setStretchLastSection(True)
         self._parameter_table.verticalHeader().setVisible(False)
         self._parameter_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
-        self._parameter_table.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked)
+        self._parameter_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
         layout.addWidget(self._parameter_table, stretch=1)
 
@@ -128,7 +112,7 @@ class PlanEditorWidget(QWidget):
         button_layout = QHBoxLayout()
         button_layout.addStretch(1)
 
-        self._batch_button = QPushButton("Batch Upload")
+        self._batch_button = QPushButton("Batch Generation")
         self._add_button = QPushButton("Add to Queue")
         self._add_button.clicked.connect(self._emit_submission)
         self._save_button = QPushButton("Save")
@@ -154,57 +138,47 @@ class PlanEditorWidget(QWidget):
 
     # Selection hooks ----------------------------------------------------
 
-    def set_selected_dataset(self, payload: Mapping[str, object]) -> None:
+    def set_selected_dataset(self, datasetTitle: str) -> None:
         """Store the latest dataset/metadata selection from the viewer."""
+        print(f"set_selected_dataset: {datasetTitle}")
+        self._apply_roi_to_parameters({"user_comment": datasetTitle})
 
-        self._selected_dataset = dict(payload)
+    def handle_point_drawn(self, point: Mapping[str, object]) -> None:
+        """Record point coordinates emitted from the toolbar."""
+        print(f"handle_point_drawn: {point}")
+        self._apply_roi_to_parameters(point)
 
-    def handle_canvas_interaction(self, payload: Mapping[str, object]) -> None:
-        """Record canvas interaction details (e.g., clicks)."""
-
-        self._selected_dataset = dict(payload)
-
-    def selected_dataset(self) -> Optional[Dict[str, object]]:
-        return dict(self._selected_dataset) if self._selected_dataset is not None else None
 
     def handle_roi_drawn(self, roi: Mapping[str, object]) -> None:
         """Receive ROI data emitted from the visualization toolbar."""
+        self._apply_roi_to_parameters(roi)
 
-        self._roi_regions.append(dict(roi))
-
-    def roi_regions(self) -> List[dict]:
-        return list(self._roi_regions)
 
     # Public API ---------------------------------------------------------
 
-    def set_client(self, client: PlanCatalogClient, *, refresh: bool = True) -> None:
-        self._client = client
+    def set_controller(self, controller: "QServerController", *, refresh: bool = True) -> None:
+        self._controller = controller
         if refresh:
-            self.refresh_from_client()
+            self.refresh_from_controller()
 
-    def refresh_from_client(self) -> None:
-        if self._client is None:
+    def refresh_from_controller(self) -> None:
+        if self._controller is None:
             return
-        for kind in self._kinds:
-            definitions = list(self._client.fetch_definitions(kind))
-            self._definitions[kind] = definitions
+        definitions = self._controller.get_allowed_plan_definitions(kind=self._current_kind)
+        if not definitions:
+            return
+        self._definitions = definitions
         self._refresh_plan_combo()
 
     def load_definitions(self, definitions: Iterable[PlanDefinition]) -> None:
-        for definition in definitions:
-            bucket = self._definitions.setdefault(definition.kind, [])
-            bucket.append(definition)
+        self._definitions.extend(definitions)
         self._refresh_plan_combo()
 
     def current_plan(self) -> Optional[PlanDefinition]:
-        kind = self._current_kind
         index = self._plan_combo.currentIndex()
-        if index < 0:
+        if index < 0 or index >= len(self._definitions):
             return None
-        try:
-            return self._definitions[kind][index]
-        except (KeyError, IndexError):
-            return None
+        return self._definitions[index]
 
     # Internal helpers ---------------------------------------------------
 
@@ -216,21 +190,19 @@ class PlanEditorWidget(QWidget):
         return self._kinds[0]
 
     def _handle_kind_change(self, kind: str) -> None:
-        if kind != self._current_kind:
-            return
         self._refresh_plan_combo()
 
     def _refresh_plan_combo(self) -> None:
-        kind = self._current_kind
-        definitions = self._definitions.get(kind, [])
+        definitions = self._definitions
         self._plan_combo.blockSignals(True)
         self._plan_combo.clear()
         for definition in definitions:
-            label = definition.name
-            if definition.description:
-                label = f"{definition.name} – {definition.description}"
-            self._plan_combo.addItem(label, definition)
+            self._plan_combo.addItem(definition.name, definition)
         self._plan_combo.blockSignals(False)
+        if definitions:
+            for index, definition in enumerate(definitions):
+                tooltip = definition.description or ""
+                self._plan_combo.setItemData(index, tooltip, Qt.ItemDataRole.ToolTipRole)
         if definitions:
             self._plan_combo.setCurrentIndex(0)
             self._populate_parameters()
@@ -243,20 +215,119 @@ class PlanEditorWidget(QWidget):
             self._parameter_table.setRowCount(0)
             return
 
-        parameters = list(definition.parameters)
+        extras = self._extra_parameters.get(self._current_kind, [])
+        parameters = list(extras) + list(definition.parameters)
         self._parameter_table.setRowCount(len(parameters))
+        self._parameter_rows.clear()
+
         for row, parameter in enumerate(parameters):
             name_item = QTableWidgetItem(parameter.name)
             name_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if parameter in extras:
+                font = name_item.font()
+                font.setBold(True)
+                name_item.setFont(font)
+            if parameter.description:
+                name_item.setToolTip(parameter.description)
             self._parameter_table.setItem(row, 0, name_item)
 
-            value_item = QTableWidgetItem(parameter.default_as_text())
-            value_item.setFlags(
-                Qt.ItemFlag.ItemIsSelectable
-                | Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsEditable
+            raw_text = parameter.default_as_text()
+            default_label = self._format_default_label(raw_text)
+
+            container = QWidget()
+            layout = QHBoxLayout(container)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(6)
+
+            checkbox = QCheckBox()
+            line_edit = QLineEdit(default_label)
+            line_edit.setEnabled(False)
+            line_edit.setStyleSheet("color: #666666;")
+            if parameter.description:
+                line_edit.setToolTip(parameter.description)
+
+            def handle_toggle(checked: bool, le: QLineEdit = line_edit, default=raw_text, label=default_label) -> None:
+                if checked:
+                    le.setEnabled(True)
+                    le.setStyleSheet("")
+                    if le.text() == label:
+                        le.setText(default)
+                else:
+                    le.setEnabled(False)
+                    le.setStyleSheet("color: #666666;")
+                    le.setText(label)
+
+            checkbox.toggled.connect(handle_toggle)
+
+            layout.addWidget(checkbox)
+            layout.addWidget(line_edit, 1)
+            self._parameter_table.setCellWidget(row, 1, container)
+
+            self._parameter_rows[parameter.name] = (checkbox, line_edit, parameter, raw_text, default_label)
+
+    @staticmethod
+    def _convert_extra_parameters(config: Any) -> List[PlanParameter]:
+        if isinstance(config, Mapping):
+            entries = config.get("parameters", [])
+        else:
+            entries = config
+        parameters: List[PlanParameter] = []
+        if not isinstance(entries, Iterable):
+            return parameters
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            parameters.append(
+                PlanParameter(
+                    name=name,
+                    default=entry.get("default"),
+                    required=bool(entry.get("required", False)),
+                    description=entry.get("description") if isinstance(entry.get("description"), str) else None,
+                )
             )
-            self._parameter_table.setItem(row, 1, value_item)
+        return parameters
+
+    def _apply_roi_to_parameters(self, roi: Mapping[str, object]) -> None:
+        if not self._parameter_rows or not self._roi_key_map:
+            return
+        for roi_key, value in roi.items():
+            targets = self._roi_key_map.get(str(roi_key))
+            print(f"roi_key: {roi_key}, targets: {targets}")
+            if not targets:
+                continue
+            for target_name in targets:
+                row = self._parameter_rows.get(target_name)
+                if not row:
+                    continue
+                checkbox, line_edit, _, raw_default, default_label = row
+                checkbox.blockSignals(True)
+                checkbox.setChecked(True)
+                checkbox.blockSignals(False)
+                line_edit.setEnabled(True)
+                line_edit.setStyleSheet("")
+                line_edit.setText(str(value))
+
+    @staticmethod
+    def _format_default_label(text: str) -> str:
+        display = text if text else "None"
+        return f"{display} (default)"
+
+    @staticmethod
+    def _normalize_key_map(raw_map: Optional[Mapping[str, object]]) -> Dict[str, List[str]]:
+        normalized: Dict[str, List[str]] = {}
+        if not isinstance(raw_map, Mapping):
+            return normalized
+        for key, targets in raw_map.items():
+            if isinstance(targets, str):
+                normalized[str(key)] = [targets]
+            elif isinstance(targets, Iterable) and not isinstance(targets, (str, bytes)):
+                collected = [str(item) for item in targets if isinstance(item, str)]
+                if collected:
+                    normalized[str(key)] = collected
+        return normalized
 
     def _emit_submission(self) -> None:
         definition = self.current_plan()
@@ -269,10 +340,11 @@ class PlanEditorWidget(QWidget):
             "parameters": {},
         }
 
-        for row in range(self._parameter_table.rowCount()):
-            param_name = self._parameter_table.item(row, 0).text()
-            value_item = self._parameter_table.item(row, 1)
-            value_text = value_item.text() if value_item is not None else ""
-            payload["parameters"][param_name] = value_text
+        for name, (checkbox, line_edit, parameter, raw_default, default_label) in self._parameter_rows.items():
+            if checkbox.isChecked():
+                value_text = line_edit.text()
+            else:
+                value_text = raw_default
+            payload["parameters"][name] = value_text
 
         self.planSubmitted.emit(payload)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import pathlib
 import importlib
-from typing import Callable, Iterable, List, Optional, Sequence
+from typing import Callable, Iterable, List, Mapping, Optional, Sequence
 
 from PySide6.QtWidgets import QWidget
 
@@ -17,6 +17,7 @@ from ..ui.scan_setup import DataViewerPane
 from ..ui.data_loader import PtychographyLoaderWidget, XRFLoaderWidget
 from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
 from ..ui.qserver_status import QueueServerStatusWidget
+from ..ui.qserver_console import QServerConsoleWidget
 from ..ui.qserver import QServerWidget
 
 def _coerce_paths(
@@ -172,22 +173,6 @@ def register_default_widgets(
 
         loader_factories.append(make_ptycho_loader)
 
-    plan_editor_cfg = viewer_cfg.get("plan_editor")
-    if isinstance(plan_editor_cfg, dict) and plan_editor_cfg.get("enabled", True):
-        plans_cfg = plan_editor_cfg.get("plans", [])
-        kinds_cfg = plan_editor_cfg.get("kinds")
-        kinds = list(kinds_cfg) if isinstance(kinds_cfg, Sequence) else None
-
-        def make_plan_editor() -> tuple[QWidget, str]:
-            widget = PlanEditorWidget(kinds=kinds)
-            if isinstance(plans_cfg, list):
-                definitions = _parse_plan_definitions(plans_cfg)
-                if definitions:
-                    widget.load_definitions(definitions)
-            return widget, plan_editor_cfg.get("layout_slot", "plan_editor")
-
-        extra_factories.append(make_plan_editor)
-
     status_cfg = viewer_cfg.get("queue_status")
     if status_cfg is None:
         include_status = True
@@ -199,43 +184,116 @@ def register_default_widgets(
         include_status = bool(status_cfg)
         status_slot = "queue_status"
 
-    if include_status:
-        qserver_poll_interval = int(status_cfg.get("poll_interval_ms", viewer_cfg.get("poll_interval_ms", 2000))) if isinstance(status_cfg, dict) else 2000
+    default_poll_interval = int(viewer_cfg.get("poll_interval_ms", 2000))
+    if isinstance(status_cfg, dict):
+        qserver_poll_interval = int(status_cfg.get("poll_interval_ms", default_poll_interval))
+    else:
+        qserver_poll_interval = default_poll_interval
 
-        _qserver_controller: Optional[QServerController] = None
+    indicator_config: Optional[Mapping[str, Mapping[str, str]]] = None
+    indicator_keys: Optional[Sequence[str]] = None
+    status_keys_override: Optional[Sequence[str]] = None
 
-        def ensure_controller() -> QServerController:
-            nonlocal _qserver_controller
-            if _qserver_controller is None:
-                control_address = os.getenv("QSERVER_ZMQ_CONTROL_ADDRESS")
-                info_address = os.getenv("QSERVER_ZMQ_INFO_ADDRESS")
-                if not control_address or not info_address:
-                    raise RuntimeError(
-                        "QServer ZMQ environment variables 'QSERVER_ZMQ_CONTROL_ADDRESS' and "
-                        "'QSERVER_ZMQ_INFO_ADDRESS' must be set."
-                    )
-                api = QServerAPI(
-                    zmq_control_address=control_address,
-                    zmq_info_address=info_address,
+    if include_status and isinstance(status_cfg, dict):
+        raw_indicators = status_cfg.get("labels")
+        if isinstance(raw_indicators, Mapping):
+            indicator_config = raw_indicators
+            indicator_keys = tuple(raw_indicators.keys())
+            status_keys_override = tuple(key for key in indicator_keys if key != "connected")
+
+    _qserver_controller: Optional[QServerController] = None
+
+    def ensure_controller() -> QServerController:
+        nonlocal _qserver_controller
+        if _qserver_controller is None:
+            control_address = os.getenv("QSERVER_ZMQ_CONTROL_ADDRESS")
+            info_address = os.getenv("QSERVER_ZMQ_INFO_ADDRESS")
+            if not control_address or not info_address:
+                raise RuntimeError(
+                    "QServer ZMQ environment variables 'QSERVER_ZMQ_CONTROL_ADDRESS' and "
+                    "'QSERVER_ZMQ_INFO_ADDRESS' must be set."
                 )
-                _qserver_controller = QServerController(api=api, poll_interval_ms=qserver_poll_interval)
-            return _qserver_controller
+            api = QServerAPI(
+                zmq_control_addr=control_address,
+                zmq_info_addr=info_address,
+            )
+            _qserver_controller = QServerController(
+                api=api,
+                poll_interval_ms=qserver_poll_interval,
+                status_keys=status_keys_override,
+            )
+        return _qserver_controller
 
-        def make_status_widget() -> tuple[QWidget, str]:
-            widget = QueueServerStatusWidget()
+    plan_editor_cfg = viewer_cfg.get("plan_editor")
+    if isinstance(plan_editor_cfg, dict) and plan_editor_cfg.get("enabled", True):
+        plans_cfg = plan_editor_cfg.get("plans", [])
+        kinds_cfg = plan_editor_cfg.get("kinds")
+        kinds = list(kinds_cfg) if isinstance(kinds_cfg, Sequence) else None
+        kind_parameters = plan_editor_cfg.get("kind_parameters") if isinstance(plan_editor_cfg.get("kind_parameters"), Mapping) else None
+        roi_key_map = plan_editor_cfg.get("roi_key_map") if isinstance(plan_editor_cfg.get("roi_key_map"), Mapping) else None
+
+        def make_plan_editor() -> tuple[QWidget, str]:
             controller = ensure_controller()
+            widget = PlanEditorWidget(
+                kinds=kinds,
+                controller=controller,
+                kind_overrides=kind_parameters,
+                roi_key_map=roi_key_map,
+            )
+            if isinstance(plans_cfg, list):
+                definitions = _parse_plan_definitions(plans_cfg)
+                if definitions:
+                    widget.load_definitions(definitions)
+            return widget, plan_editor_cfg.get("layout_slot", "plan_editor")
+
+        extra_factories.append(make_plan_editor)
+
+    if include_status:
+        def make_status_widget() -> tuple[QWidget, str]:
+            widget = QueueServerStatusWidget(indicators=indicator_config)
+            controller = ensure_controller()
+            widget.set_controller(controller)
             widget.connectRequested.connect(controller.request_connect)
             controller.statusUpdated.connect(
-                lambda status: widget.set_queue_status(
-                    connected=status.get("connected", False),
-                    queue_status=status.get("queue_state", "unknown"),
-                    run_engine_status=status.get("re_state", "unknown"),
-                )
+                lambda status: widget.update_status(status)
             )
             controller.start_polling()
             return widget, status_slot
 
         extra_factories.append(make_status_widget)
+
+    console_cfg = viewer_cfg.get("console_output")
+    if console_cfg is None:
+        include_console = False
+        console_slot = "console_output"
+    elif isinstance(console_cfg, dict):
+        include_console = console_cfg.get("enabled", True)
+        console_slot = console_cfg.get("layout_slot", "console_output")
+    else:
+        include_console = bool(console_cfg)
+        console_slot = "console_output"
+
+    if include_console:
+        console_title = "QServer Console"
+        console_max_entries = 500
+        console_auto_scroll = True
+        if isinstance(console_cfg, dict):
+            console_title = console_cfg.get("title", console_title)
+            console_max_entries = int(console_cfg.get("max_entries", console_max_entries))
+            console_auto_scroll = bool(console_cfg.get("auto_scroll", console_auto_scroll))
+
+        def make_console_widget() -> tuple[QWidget, str]:
+            controller = ensure_controller()
+            widget = QServerConsoleWidget(
+                title=console_title,
+                max_entries=console_max_entries,
+                auto_scroll=console_auto_scroll,
+            )
+            controller.consoleMessageReceived.connect(widget.append_message)
+            controller.start_console_monitor()
+            return widget, console_slot
+
+        extra_factories.append(make_console_widget)
 
     if not loader_factories:
         def make_fallback_loader() -> tuple:
@@ -260,8 +318,8 @@ def register_default_widgets(
 
         for widget, _ in extra_widgets:
             if isinstance(widget, PlanEditorWidget):
-                pane.datasetChanged.connect(widget.set_selected_dataset)
-                pane.canvasPointSelected.connect(widget.handle_canvas_interaction)
+                # pane.datasetROIDrawn.connect(widget.set_selected_dataset)
+                pane.canvasPointSelected.connect(widget.handle_point_drawn)
                 pane.roiDrawn.connect(widget.handle_roi_drawn)
 
         return pane

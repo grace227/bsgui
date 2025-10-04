@@ -37,6 +37,7 @@ class DataVisualizationWidget(QWidget):
         self._toolbar = CustomToolbar(self._canvas.canvas, self)  # type: ignore[arg-type]
         layout.insertWidget(0, self._toolbar)
         self._toolbar.roiDrawn.connect(self.roiDrawn.emit)
+        self._toolbar.pointSelected.connect(self.canvasPointSelected.emit)
 
     @property
     def plot_canvas(self) -> PlotCanvasWidget:
@@ -100,31 +101,9 @@ class DataVisualizationWidget(QWidget):
         self._toolbar.rectangles = []
         self._toolbar.rectangle_labels = []
         self._toolbar.lines = []
+        self._toolbar.points = []
         self._toolbar.active_rectangle = None
         self._toolbar.active_line = None
-
-    # def _handle_canvas_click(self, event) -> None:
-    #     if event.xdata is None or event.ydata is None:
-    #         return
-    #     payload = self._last_payload or {}
-    #     info = {
-    #         "x": event.xdata,
-    #         "y": event.ydata,
-    #         "button": getattr(event, "button", None),
-    #         "payload": payload,
-    #     }
-    #     self.canvasPointSelected.emit(info)
-
-    # def _handle_mouse_move(self, event) -> None:
-    #     if event.xdata is None or event.ydata is None:
-    #         return
-    #     payload = self._last_payload or {}
-    #     info = {
-    #         "x": event.xdata,
-    #         "y": event.ydata,
-    #         "payload": payload,
-    #     }
-    #     self.cursorMoved.emit(info)
 
 
 class DataViewerPane(QWidget):

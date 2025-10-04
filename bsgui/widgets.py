@@ -13,6 +13,7 @@ from .ui import (
     PtychographyLoaderWidget,
     QServerWidget,
     QueueServerStatusWidget,
+    QServerConsoleWidget,
     XRFLoaderWidget,
 )
 
@@ -30,6 +31,7 @@ __all__ = [
     "PtychographyLoaderWidget",
     "QServerWidget",
     "QueueServerStatusWidget",
+    "QServerConsoleWidget",
     "XRFLoaderWidget",
     "default_loader",
 ]

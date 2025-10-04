@@ -2,10 +2,12 @@ import matplotlib.pyplot as plt
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt, Signal
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+import numpy as np
 
 
 class CustomToolbar(NavigationToolbar):
     roiDrawn = Signal(dict)
+    pointSelected = Signal(dict)
     def __init__(self, canvas, parent):
         super().__init__(canvas, parent)
         self.parent = parent
@@ -15,6 +17,11 @@ class CustomToolbar(NavigationToolbar):
         self.drawRectangleAction.setCheckable(True)
         self.addAction(self.drawRectangleAction)
 
+        # Configure the cursor click action
+        self.selectPointAction = QAction("Add Point", self)
+        self.selectPointAction.setCheckable(True)
+        self.addAction(self.selectPointAction)
+
         # Create QAction for remove rectangles
         self.removeRectangleAction = QAction("Remove ROI", self)
         self.removeRectangleAction.setCheckable(True)
@@ -23,6 +30,7 @@ class CustomToolbar(NavigationToolbar):
         # Connect the action trigger to enable/disable rectangle drawing
         self.drawRectangleAction.triggered.connect(self.toggle_rectangle_drawing)
         self.removeRectangleAction.triggered.connect(self.toggle_rectangle_remove)
+        self.selectPointAction.triggered.connect(self.toggle_point_selection)
 
         self.canvas.mpl_connect("button_press_event", self.on_mouse_press)
         self.canvas.mpl_connect("motion_notify_event", self.on_mouse_drag)
@@ -32,9 +40,12 @@ class CustomToolbar(NavigationToolbar):
 
         self.start_x = None
         self.start_y = None
+        self.center_x = None
+        self.center_y = None
         self.end_x = None
         self.end_y = None
         self.is_drawing = False
+        self.is_pointing = False
         self.is_removing = False
 
         self.rect = None
@@ -45,11 +56,16 @@ class CustomToolbar(NavigationToolbar):
         self.idx = []
         self.active_rectangle = None
         self.active_line = None
+        self.active_point = None
+        self.points = []
 
     def on_mouse_press(self, event):
         if self.is_drawing and event.button == 1:
             self.start_x = event.xdata
             self.start_y = event.ydata
+        elif self.is_pointing and event.button == 1:
+            self.center_x = event.xdata
+            self.center_y = event.ydata
 
     def on_mouse_release(self, event):
         if event.button == 1:
@@ -69,6 +85,14 @@ class CustomToolbar(NavigationToolbar):
                 self.end_y = None
                 self.rect = None
 
+            elif self.is_pointing:
+                self.draw_point()
+                self.points.append(self.point)
+                print(f"points: {self.points}")
+                self._emit_point(self.point)
+                self.center_x = None
+                self.center_y = None
+
             elif self.active_rectangle:
                 x_st = self.active_rectangle.get_x()
                 y_st = self.active_rectangle.get_y()
@@ -81,8 +105,15 @@ class CustomToolbar(NavigationToolbar):
                 self.active_rectangle = None
                 self.active_line = None
 
+            elif self.active_point:
+                self.active_point.remove()
+                self.points.remove(self.active_point)
+                self.active_point = None
+                self.canvas.draw()
+
     def on_mouse_hover(self, event):
-        if event.inaxes and self.drawRectangleAction.isChecked():
+        if event.inaxes and any([self.drawRectangleAction.isChecked(), 
+                                 self.selectPointAction.isChecked()]):
             self.canvas.setCursor(
                 Qt.CursorShape.CrossCursor
             )  # Set cursor to crosshair while hovering over the figure
@@ -154,11 +185,28 @@ class CustomToolbar(NavigationToolbar):
             ax.add_patch(self.rect)
             self.canvas.draw()
 
+    def draw_point(self):
+        if all(
+            val is not None
+            for val in [self.center_x, self.center_y]
+        ):
+            ax = self.canvas.figure.gca()
+            (self.point,) = ax.plot(
+                self.center_x,
+                self.center_y,
+                marker="+",
+                markersize=10,
+                color="white",
+                linestyle="",
+            )
+            self.canvas.draw()
+
     def _annotate_rectangle(self, rect):
         x = rect.get_x()
         y = rect.get_y()
         width = rect.get_width()
         height = rect.get_height()
+
         ax = self.canvas.figure.gca()
         label = ax.annotate(
             str(len(self.rectangle_labels) + 1),
@@ -182,42 +230,98 @@ class CustomToolbar(NavigationToolbar):
         )
 
     def _emit_roi(self, rect):
+        x_center = rect.get_x() + rect.get_width() / 2.0
+        y_center = rect.get_y() + rect.get_height() / 2.0
+        axes = rect.axes
+        title = "selected from " + axes.get_title() if axes is not None else ""
         data = {
-            "x": rect.get_x(),
-            "y": rect.get_y(),
-            "width": rect.get_width(),
-            "height": rect.get_height(),
+            "x": np.round(x_center, 5),
+            "y": np.round(y_center, 5),
+            "width": np.round(rect.get_width(), 5),
+            "height": np.round(rect.get_height(), 5),
+            "title": title,
         }
         self.roiDrawn.emit(data)
 
+    def _emit_point(self, marker):
+        try:
+            xdata = marker.get_xdata()
+            ydata = marker.get_ydata()
+            x = float(xdata[0]) if len(xdata) else None
+            y = float(ydata[0]) if len(ydata) else None
+        except Exception:
+            x = y = None
+        if x is not None and y is not None:
+            axes = marker.axes
+            title = "selected from " + axes.get_title() if axes is not None else ""
+            self.pointSelected.emit(
+                {
+                    "x": np.round(x, 5),
+                    "y": np.round(y, 5),
+                    "title": title,
+                }
+            )
+
     def toggle_rectangle_drawing(self):
-        if self.drawRectangleAction.isChecked():
-            self.is_drawing = True
-            self.drawRectangleAction.setChecked(True)
+        active = self.drawRectangleAction.isChecked()
+        self.is_drawing = active
+        self.drawRectangleAction.setChecked(active)
+        self.is_pointing = False
+        self.selectPointAction.setChecked(False)
+        self.is_removing = False
+        self.removeRectangleAction.setChecked(False)
+        if not active:
             self.active_rectangle = None
-            self.is_removing = False
-            self.removeRectangleAction.setChecked(False)
-        else:
-            self.is_drawing = False
 
     def toggle_rectangle_remove(self):
-        if self.removeRectangleAction.isChecked():
-            self.is_drawing = False
-            self.drawRectangleAction.setChecked(False)
-            self.is_removing = True
+        active = self.removeRectangleAction.isChecked()
+        self.is_removing = active
+        self.removeRectangleAction.setChecked(active)
+        self.is_drawing = False
+        self.drawRectangleAction.setChecked(False)
+        self.is_pointing = False
+        self.selectPointAction.setChecked(False)
+        if not active:
             self.active_rectangle = None
-        else:
-            self.is_removing = False
+
+    def toggle_point_selection(self):
+        active = self.selectPointAction.isChecked()
+        self.is_pointing = active
+        self.selectPointAction.setChecked(active)
+        self.is_drawing = False
+        self.drawRectangleAction.setChecked(False)
+        self.is_removing = False
+        self.removeRectangleAction.setChecked(False)
 
     def hover_change(self, event):
-        if len(self.rectangles):
-            for rect in self.rectangles:
-                if isinstance(rect, plt.Rectangle):
-                    if rect.contains(event)[0]:
-                        rect.set_edgecolor("blue")
-                        self.active_rectangle = rect
+        if self.removeRectangleAction.isChecked():
+            if len(self.rectangles):
+                for rect in self.rectangles:
+                    if isinstance(rect, plt.Rectangle):
+                        if rect.contains(event)[0]:
+                            rect.set_edgecolor("blue")
+                            self.active_rectangle = rect
+                        else:
+                            rect.set_edgecolor("red")
+                        self.canvas.draw()
+
+            if len(self.points):
+                for point in self.points:
+                    if point.contains(event)[0]:
+                        point.set_color("blue")
+                        self.active_point = point
                     else:
-                        rect.set_edgecolor("red")
+                        point.set_color("red")
+                    self.canvas.draw()
+        else:
+            if len(self.rectangles):
+                for rect in self.rectangles:
+                    if isinstance(rect, plt.Rectangle):
+                        rect.set_edgecolor("white")
+                        self.canvas.draw()
+            if len(self.points):
+                for point in self.points:
+                    point.set_color("white")
                     self.canvas.draw()
 
     def on_pick_rectangle(self, event):

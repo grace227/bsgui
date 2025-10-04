@@ -6,6 +6,7 @@ from .plan_editor import PlanEditorWidget, PlanDefinition, PlanParameter
 from .plot_canvas import PlotCanvasWidget
 from .qserver import QServerWidget
 from .qserver_status import QueueServerStatusWidget
+from .qserver_console import QServerConsoleWidget
 from .canvas_toolbar import CustomToolbar
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     "PtychographyLoaderWidget",
     "QServerWidget",
     "QueueServerStatusWidget",
+    "QServerConsoleWidget",
     "XRFLoaderWidget",
 ]

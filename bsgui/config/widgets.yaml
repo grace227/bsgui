@@ -43,21 +43,83 @@ tabs:
       plan_editor:
         enabled: true
         kinds:
-          - plan
-          - instruction
+          - single
+          - batch
         plans:
-          - kind: plan
-            name: fly2d_scanrecord
-            description: Example scan plan
-            parameters:
-              - name: samplename
-                default: smp1
-              - name: width_mm
-                default: 0.0
+          - kind: single
+          - kind: batch
+        kind_parameters:
+          batch:
+            - name: iterate_variable
+              description: Name of one of the plan's variables to iterate over
+              default: smp_theta
+            - name: iterate_starting_value
+              description: Starting value of the iterate variable
+              default: 0.0
+            - name: iterate_ending_value
+              description: Ending value of the iterate variable
+              default: 10.0
+            - name: iterate_step_size
+              description: Step size of the iterate variable
+              default: 0.1
+        roi_key_map:
+          title:
+            - user_comment
+            - user_comments
+            - title
+          width:
+            - width_mm
+            - width
+          height:
+            - height_mm
+            - height
+          x:
+            - x_center_mm
+            - x_center
+          y:
+            - y_center_mm
+            - y_center
+
 
       queue_status:
         enabled: true
         layout_slot: queue_status
+        labels:
+          connected:
+            title: "QServer Connected:"
+            label: Disconnected
+          qserver_address:
+            title: "QServer Address:"
+            label: Unknown
+          manager_state:
+            title: "QServer State:"
+            label: Unknown
+          re_state:
+            title: "RunEngine State:"
+            label: Unknown
+          worker_environment_exists:
+            title: "Worker Environment Exists:"
+            label: Unknown
+          worker_environment_state:
+            title: "Worker Environment Status:"
+            label: Unknown
+          items_in_history:
+            title: "Items In History:"
+            label: Unknown
+          running_item_uid:
+            title: "Running Item UID:"
+            label: Unknown
+          items_in_queue:
+            title: "Items In Queue:"
+            label: Unknown
+
+      console_output:
+        enabled: true
+        layout_slot: console_output
+        title: "QServer Console"
+        max_entries: 1000
+        auto_scroll: true
+
 
       layout:
         type: grid
@@ -70,7 +132,7 @@ tabs:
           plan_editor:
             row: 1
             column: 2
-            row_span: 3
+            row_span: 4
             column_span: 1
           queue_status:
             row: 0
@@ -82,10 +144,17 @@ tabs:
             column: 0
             row_span: 3
             column_span: 2
+          console_output:
+            row: 4
+            column: 0
+            row_span: 1
+            column_span: 2
         row_stretch:
           "0": 0
           "1": 1
           "2": 1
+          "3": 0
+          "4": 0
         column_stretch:
           "0": 1
           "1": 1
