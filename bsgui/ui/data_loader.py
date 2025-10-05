@@ -128,14 +128,6 @@ class XRFLoaderWidget(BaseLoaderWidget):
             files.extend(sorted(folder.glob(pattern)))
         return files
 
-    # def _select_file(self, target: pathlib.Path) -> None:
-    #     for index in range(self._file_combo.count()):
-    #         path = self._file_combo.itemData(index)
-    #         if path == target:
-    #             self._file_combo.setCurrentIndex(index)
-    #             self._emit_selection()
-    #             break
-
     def _update_element_options(self, folder: Optional[pathlib.Path]) -> None:
         if isinstance(folder, int):
             folder = self._current_folder

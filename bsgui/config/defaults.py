@@ -307,7 +307,7 @@ def register_default_widgets(
 
         loader_factories.append(make_fallback_loader)
 
-    def build_data_viewer() -> DataViewerPane:
+    def connect_scan_setup_widgets() -> DataViewerPane:
         loader_instances = [factory() for factory in loader_factories]
         extra_widgets = [factory() for factory in extra_factories]
         pane = DataViewerPane(
@@ -316,11 +316,19 @@ def register_default_widgets(
             layout_config=viewer_cfg.get("layout"),
         )
 
+        plan_editor_widget: Optional[PlanEditorWidget] = None
+        status_widget: Optional[QueueServerStatusWidget] = None
+
         for widget, _ in extra_widgets:
             if isinstance(widget, PlanEditorWidget):
-                # pane.datasetROIDrawn.connect(widget.set_selected_dataset)
                 pane.canvasPointSelected.connect(widget.handle_point_drawn)
                 pane.roiDrawn.connect(widget.handle_roi_drawn)
+                plan_editor_widget = widget
+            elif isinstance(widget, QueueServerStatusWidget):
+                status_widget = widget
+
+        if plan_editor_widget and status_widget:
+            status_widget.clearPlansRequested.connect(plan_editor_widget.handle_plans_update)
 
         return pane
 
@@ -332,7 +340,7 @@ def register_default_widgets(
                 "description",
                 "Configure XRF and Ptychography loaders that share a plotting canvas.",
             ),
-            factory=build_data_viewer,
+            factory=connect_scan_setup_widgets,
         )
     )
 

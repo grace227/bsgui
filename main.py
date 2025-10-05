@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import pathlib
 import sys
 from collections.abc import Iterable, Sequence
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
 from bsgui.config.defaults import register_default_widgets
 from bsgui.config.registry import WidgetRegistry, registry
+from bsgui.ui.status_bus import get_status_bus, emit_status
 
 
 DEFAULT_WIDGET_KEYS = ["scan_setup", "qserver"]
@@ -98,6 +100,17 @@ def parse_app_settings(config: dict) -> tuple[str, Sequence[int], dict]:
     return title, (width, height), status_messages
 
 
+class StatusBarLogHandler(logging.Handler):
+    """Logging handler that forwards records to the status bus."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = self.format(record)
+        except Exception:  # pragma: no cover - defensive
+            message = record.getMessage()
+        emit_status(message)
+
+
 class MainWindow(QMainWindow):
     """Main window that arranges registered widgets into tabs."""
 
@@ -111,8 +124,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle(window_title)
-
         self.statusBar().showMessage((status_messages or {}).get("idle", "Ready."))
+        get_status_bus().message.connect(self.statusBar().showMessage)
 
         tabs = QTabWidget()
         for tab_config in tab_configs:
@@ -168,6 +181,11 @@ def main(argv: List[str]) -> int:
     args = parse_args(argv)
     config_path = resolve_config_path(args.config)
     config = load_config(config_path) if config_path else {}
+
+    logging.basicConfig(level=logging.INFO)
+    status_handler = StatusBarLogHandler()
+    status_handler.setLevel(logging.INFO)
+    logging.getLogger().addHandler(status_handler)
 
     tab_configs = extract_tab_configs(config, list(args.widgets))
 

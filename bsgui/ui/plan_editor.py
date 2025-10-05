@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .status_bus import emit_status
+
 from ..core.qserver_controller import PlanDefinition, PlanParameter
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
@@ -65,9 +67,6 @@ class PlanEditorWidget(QWidget):
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.addWidget(self._tabs)
-
-        if self._controller is not None:
-            self.refresh_from_controller()
 
     def _build_plan_editor_panel(self) -> QWidget:
         widget = QWidget()
@@ -138,27 +137,24 @@ class PlanEditorWidget(QWidget):
 
     # Selection hooks ----------------------------------------------------
 
-    def set_selected_dataset(self, datasetTitle: str) -> None:
-        """Store the latest dataset/metadata selection from the viewer."""
-        print(f"set_selected_dataset: {datasetTitle}")
-        self._apply_roi_to_parameters({"user_comment": datasetTitle})
-
     def handle_point_drawn(self, point: Mapping[str, object]) -> None:
         """Record point coordinates emitted from the toolbar."""
-        print(f"handle_point_drawn: {point}")
         self._apply_roi_to_parameters(point)
-
+        emit_status("Point applied to plan parameters")
 
     def handle_roi_drawn(self, roi: Mapping[str, object]) -> None:
         """Receive ROI data emitted from the visualization toolbar."""
         self._apply_roi_to_parameters(roi)
+        emit_status("ROI applied to plan parameters")
 
-
-    # Public API ---------------------------------------------------------
-
-    def set_controller(self, controller: "QServerController", *, refresh: bool = True) -> None:
-        self._controller = controller
-        if refresh:
+    def handle_plans_update(self, worker_status: str) -> None:
+        if worker_status == "closed" or worker_status == "":
+            self._plan_combo.blockSignals(True)
+            self._plan_combo.clear()
+            self._plan_combo.blockSignals(False)
+            self._parameter_table.setRowCount(0)
+            self._parameter_rows.clear()
+        elif worker_status == "idle" and self._plan_combo.count() == 0:
             self.refresh_from_controller()
 
     def refresh_from_controller(self) -> None:

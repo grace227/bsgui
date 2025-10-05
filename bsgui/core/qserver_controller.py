@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import threading
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from .qserver_api import QServerAPI
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -117,9 +120,18 @@ class QServerController(QObject):
 
     def start_re(self) -> None:
         try:
+            _logger.info("Opening Run Engine environment...")
             self._api.environment_open()
-        except Exception as exc:
-            print(f"Error starting RE Environment: {exc}")
+        except Exception:
+            _logger.exception("Error starting RE Environment")
+
+    def stop_re(self) -> None:
+        try:
+            _logger.info("Closing Run Engine environment...")
+            self._api.environment_close()
+            _logger.info("Run Engine environment stopped")
+        except Exception:
+            _logger.exception("Error stopping RE Environment")
 
     # ----------------------------------------------------------------------------
     # Internal helpers

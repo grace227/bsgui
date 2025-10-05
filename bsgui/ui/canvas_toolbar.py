@@ -4,6 +4,8 @@ from PySide6.QtCore import Qt, Signal
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 import numpy as np
 
+from .status_bus import emit_status
+
 
 class CustomToolbar(NavigationToolbar):
     roiDrawn = Signal(dict)
@@ -242,6 +244,7 @@ class CustomToolbar(NavigationToolbar):
             "title": title,
         }
         self.roiDrawn.emit(data)
+        emit_status(title or "ROI selected")
 
     def _emit_point(self, marker):
         try:
@@ -261,6 +264,7 @@ class CustomToolbar(NavigationToolbar):
                     "title": title,
                 }
             )
+            emit_status(title or "Point selected")
 
     def toggle_rectangle_drawing(self):
         active = self.drawRectangleAction.isChecked()

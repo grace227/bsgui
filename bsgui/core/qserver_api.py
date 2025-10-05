@@ -31,9 +31,10 @@ class QServerAPI(REManagerAPI):
 
         except Exception as exc:  # pragma: no cover - network path
             print(f"Error fetching status: {exc}")
-            self._connected = False
+            # self._connected = False
             self._rm_status = {} 
-            
+            self._rm_status["connected"] = False
+
         return self._rm_status
 
     def get_queue(self) -> Dict[str, Any]:
@@ -52,7 +53,9 @@ class QServerAPI(REManagerAPI):
         except Exception as exc:  # pragma: no cover - network path
             print(f"Error fetching allowed plans: {exc}")
             return {}
-        return self._normalize_allowed_plans(plans) if normalize else plans
+        processed = self._normalize_allowed_plans(plans) if normalize else dict(plans)
+        processed.pop("make_devices", None)
+        return processed
 
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:

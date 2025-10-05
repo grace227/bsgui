@@ -8,6 +8,7 @@ from .qserver import QServerWidget
 from .qserver_status import QueueServerStatusWidget
 from .qserver_console import QServerConsoleWidget
 from .canvas_toolbar import CustomToolbar
+from .status_bus import get_status_bus, emit_status
 
 __all__ = [
     "BaseLoaderWidget",
@@ -23,4 +24,6 @@ __all__ = [
     "QueueServerStatusWidget",
     "QServerConsoleWidget",
     "XRFLoaderWidget",
+    "get_status_bus",
+    "emit_status",
 ]

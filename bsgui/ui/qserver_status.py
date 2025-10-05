@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from .status_bus import emit_status
 
 if TYPE_CHECKING:
     from ..core.qserver_controller import QServerController
@@ -26,6 +27,7 @@ class QueueServerStatusWidget(QWidget):
     """Simple status panel with connect button and server indicators."""
 
     connectRequested = Signal()
+    clearPlansRequested = Signal(str)
 
     def __init__(
         self,
@@ -75,6 +77,8 @@ class QueueServerStatusWidget(QWidget):
     def update_status(self, status: Mapping[str, Any]) -> None:
         if "connected" in status:
             self._apply_connected_state(status.get("connected"))
+            self._connect_button.setEnabled(not status.get("connected"))
+            emit_status(f"QServer connected: {status.get('connected')}")
 
         for key, value in status.items():
             if key == "connected":
@@ -86,11 +90,22 @@ class QueueServerStatusWidget(QWidget):
             text = default_text if value is None else self._format_value(value)
             label.setText(text)
 
-        re_status = status.get("re_state")
-        if re_status is None:
+        worker_status = status.get("worker_environment_state")
+        self._apply_worker_environment_state(worker_status)
+        if worker_status == "closed" or worker_status is None:
             self._start_re_button.setEnabled(True)
-        else:
+            self._stop_re_button.setEnabled(False)
+            self.clearPlansRequested.emit(worker_status)
+            emit_status("RE is closed")
+        elif worker_status == "initializing":
             self._start_re_button.setEnabled(False)
+            self._stop_re_button.setEnabled(False)
+            emit_status("RE is initializing")
+        elif worker_status == "idle":
+            self._start_re_button.setEnabled(False)
+            self.clearPlansRequested.emit(worker_status)
+            emit_status("RE is idle")
+            self._stop_re_button.setEnabled(True)
 
     def _apply_connected_state(self, value: Optional[Any]) -> None:
         label = self._labels.get("connected")
@@ -106,6 +121,24 @@ class QueueServerStatusWidget(QWidget):
         else:
             label.setText(self._format_value(value))
             label.setStyleSheet("")
+
+    def _apply_worker_environment_state(self, value: Optional[Any]) -> None:
+        label = self._labels.get("worker_environment_state")
+        if label is None:
+            return
+            
+        if value == "closed" or value == "" or value is None:
+            if value is None or value == "":
+                value = self._default_labels.get("worker_environment_state", "Unknown")
+            text = value.capitalize()
+            color = "#c62828"
+        else:
+            text = value.capitalize()
+            color = "#2e7d32"
+
+        label.setText(text)
+        label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        
 
     @staticmethod
     def _format_value(value: Any) -> str:
@@ -156,11 +189,17 @@ class QueueServerStatusWidget(QWidget):
         self._start_re_button.clicked.connect(self._handle_start_re_clicked)
         self._start_re_button.setEnabled(False)
 
+        self._stop_re_button = QPushButton("Stop RE")
+        self._stop_re_button.setFixedWidth(140)
+        self._stop_re_button.clicked.connect(self._handle_stop_re_clicked)
+        self._stop_re_button.setEnabled(False)
+
         button_row = QHBoxLayout()
         button_row.setContentsMargins(0, 0, 0, 0)
         button_row.setSpacing(8)
         button_row.addWidget(self._connect_button)
         button_row.addWidget(self._start_re_button)
+        button_row.addWidget(self._stop_re_button)
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
@@ -201,23 +240,22 @@ class QueueServerStatusWidget(QWidget):
     def set_controller(self, controller: "QServerController") -> None:
         self._controller = controller
         self._start_re_button.setEnabled(False)
+        self._stop_re_button.setEnabled(False)
+
+    def _handle_stop_re_clicked(self) -> None:
+        controller = self._controller
+        if controller is None:
+            print("Failed to stop RE. QServerController is None.")
+            return
+        self._stop_re_button.setEnabled(False)
+        controller.stop_re()
+        self._start_re_button.setEnabled(True)
 
     def _handle_start_re_clicked(self) -> None:
         controller = self._controller
         if controller is None:
+            print("Failed to start RE. QServerController is None.")
             return
         self._start_re_button.setEnabled(False)
-        thread = threading.Thread(target=self._run_start_re, args=(controller,), daemon=True)
-        self._pending_threads.add(thread)
-        thread.start()
+        controller.start_re()
 
-    def _run_start_re(self, controller: "QServerController") -> None:
-        try:
-            controller.start_re()
-        finally:
-            QTimer.singleShot(0, self._on_start_re_finished)
-
-    def _on_start_re_finished(self) -> None:
-        self._pending_threads = {t for t in self._pending_threads if t.is_alive()}
-        if not self._pending_threads:
-            self._start_re_button.setEnabled(True)
