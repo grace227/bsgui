@@ -26,6 +26,8 @@ class QueueSnapshot:
 class PlanParameter:
     name: str
     default: object | None = None
+    latest: object | None = None
+    type_name: str | None = None
     required: bool = False
     description: str | None = None
 
@@ -33,14 +35,49 @@ class PlanParameter:
         if self.default is None:
             return "None"
         if isinstance(self.default, str):
-            return repr(self.default)
-        return repr(self.default)
+            return self.default
+        return str(self.default)
+
+    def inferred_type(self) -> str:
+        if self.type_name:
+            return self.type_name
+        if isinstance(self.default, bool):
+            return "bool"
+        if isinstance(self.default, int):
+            return "int"
+        if isinstance(self.default, float):
+            return "float"
+        return "str"
+
+    def coerce(self, text: str) -> object:
+        type_name = self.inferred_type().lower()
+        if text is None:
+            return None
+        stripped = text.strip()
+        if stripped == "":
+            return None
+        if stripped == "None":
+            return None
+        if type_name == "str":
+            return text
+        if type_name == "int":
+            return int(stripped)
+        if type_name == "float":
+            return float(stripped)
+        if type_name == "bool":
+            normalized = stripped.lower()
+            if normalized in {"true", "1", "yes", "y", "on"}:
+                return True
+            if normalized in {"false", "0", "no", "n", "off"}:
+                return False
+            raise ValueError(f"Invalid bool value: {text}")
+        return text
 
 
 @dataclass(frozen=True)
 class PlanDefinition:
+    item_type: str
     name: str
-    kind: str
     parameters: Sequence[PlanParameter]
     description: str | None = None
 
@@ -203,19 +240,29 @@ class QServerController(QObject):
                     continue
                 default = param.get("default")
                 param_desc = param.get("description") if isinstance(param.get("description"), str) else None
-                required = bool(param.get("kind", {}).get("name") == "POSITIONAL_ONLY" and param.get("default") is None)
+                raw_type = param.get("type_name")
+                if not raw_type and isinstance(param_desc, str) and "Type:" in param_desc:
+                    raw_type = param_desc.split("Type:")[-1].strip()
+                if not raw_type and default is not None:
+                    if isinstance(default, bool):
+                        raw_type = "bool"
+                    elif isinstance(default, int):
+                        raw_type = "int"
+                    elif isinstance(default, float):
+                        raw_type = "float"
                 parameters.append(
                     PlanParameter(
                         name=pname,
                         default=default,
-                        required=required,
+                        type_name=raw_type,
+                        required=bool(param.get("required", False)),
                         description=param_desc,
                     )
                 )
             definitions.append(
                 PlanDefinition(
                     name=str(spec.get("name", name)),
-                    kind=kind,
+                    item_type=kind,
                     parameters=tuple(parameters),
                     description=description,
                 )

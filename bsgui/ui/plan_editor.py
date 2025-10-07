@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator
+from PySide6.QtCore import QRegularExpression
 
 from .status_bus import emit_status
 
@@ -57,8 +59,7 @@ class PlanEditorWidget(QWidget):
             for kind in self._kinds:
                 self._extra_parameters[kind] = []
         self._selected_dataset: Dict[str, object] | None = None
-        # self._roi_regions: List[dict] = []
-        self._parameter_rows: Dict[str, tuple[QCheckBox, QLineEdit, PlanParameter, str, str]] = {}
+        self._parameter_rows: Dict[str, tuple[QCheckBox, QLineEdit, PlanParameter, object | None, str]] = {}
         self._roi_key_map = self._normalize_key_map(roi_key_map)
 
         self._tabs = QTabWidget()
@@ -166,9 +167,9 @@ class PlanEditorWidget(QWidget):
         self._definitions = definitions
         self._refresh_plan_combo()
 
-    def load_definitions(self, definitions: Iterable[PlanDefinition]) -> None:
-        self._definitions.extend(definitions)
-        self._refresh_plan_combo()
+    # def load_definitions(self, definitions: Iterable[PlanDefinition]) -> None:
+    #     self._definitions.extend(definitions)
+    #     self._refresh_plan_combo()
 
     def current_plan(self) -> Optional[PlanDefinition]:
         index = self._plan_combo.currentIndex()
@@ -187,6 +188,7 @@ class PlanEditorWidget(QWidget):
 
     def _handle_kind_change(self, kind: str) -> None:
         self._refresh_plan_combo()
+        self._refresh_btn_state()
 
     def _refresh_plan_combo(self) -> None:
         definitions = self._definitions
@@ -205,6 +207,15 @@ class PlanEditorWidget(QWidget):
         else:
             self._parameter_table.setRowCount(0)
 
+    def _refresh_btn_state(self) -> None:
+        emit_status(f"Selected add mode: {self._current_kind}")
+        if self._current_kind == "single":
+            self._batch_button.setEnabled(False)
+            self._add_button.setEnabled(True)
+        elif self._current_kind == "batch":
+            self._batch_button.setEnabled(True)
+            self._add_button.setEnabled(False)
+        
     def _populate_parameters(self) -> None:
         definition = self.current_plan()
         if definition is None:
@@ -227,8 +238,9 @@ class PlanEditorWidget(QWidget):
                 name_item.setToolTip(parameter.description)
             self._parameter_table.setItem(row, 0, name_item)
 
-            raw_text = parameter.default_as_text()
-            default_label = self._format_default_label(raw_text)
+            default_value = parameter.default
+            default_text = parameter.default_as_text()
+            default_label = self._format_default_label(default_text)
 
             container = QWidget()
             layout = QHBoxLayout(container)
@@ -242,12 +254,23 @@ class PlanEditorWidget(QWidget):
             if parameter.description:
                 line_edit.setToolTip(parameter.description)
 
-            def handle_toggle(checked: bool, le: QLineEdit = line_edit, default=raw_text, label=default_label) -> None:
+            inferred_type = parameter.inferred_type().lower() if hasattr(parameter, "inferred_type") else (parameter.type_name or "str").lower()
+            validator = self._build_validator(parameter, line_edit)
+            if validator is not None:
+                line_edit.setValidator(validator)
+            if inferred_type == "bool":
+                line_edit.setPlaceholderText("True / False")
+            elif inferred_type == "int":
+                line_edit.setPlaceholderText("Enter integer")
+            elif inferred_type == "float":
+                line_edit.setPlaceholderText("Enter number")
+
+            def handle_toggle(checked: bool, le: QLineEdit = line_edit, text=default_text, label=default_label) -> None:
                 if checked:
                     le.setEnabled(True)
                     le.setStyleSheet("")
                     if le.text() == label:
-                        le.setText(default)
+                        le.setText("" if text == "None" else text)
                 else:
                     le.setEnabled(False)
                     le.setStyleSheet("color: #666666;")
@@ -259,7 +282,7 @@ class PlanEditorWidget(QWidget):
             layout.addWidget(line_edit, 1)
             self._parameter_table.setCellWidget(row, 1, container)
 
-            self._parameter_rows[parameter.name] = (checkbox, line_edit, parameter, raw_text, default_label)
+            self._parameter_rows[parameter.name] = (checkbox, line_edit, parameter, default_value, default_label)
 
     @staticmethod
     def _convert_extra_parameters(config: Any) -> List[PlanParameter]:
@@ -280,25 +303,41 @@ class PlanEditorWidget(QWidget):
                 PlanParameter(
                     name=name,
                     default=entry.get("default"),
+                    type_name=entry.get("type_name"),
                     required=bool(entry.get("required", False)),
                     description=entry.get("description") if isinstance(entry.get("description"), str) else None,
                 )
             )
         return parameters
 
+    def _build_validator(self, parameter: PlanParameter, line_edit: QLineEdit):
+        type_name = parameter.inferred_type().lower() if hasattr(parameter, 'inferred_type') else (parameter.type_name or 'str').lower()
+        if type_name == 'int':
+            validator = QIntValidator(line_edit)
+            validator.setRange(-2147483648, 2147483647)
+            return validator
+        if type_name == 'float':
+            validator = QDoubleValidator(line_edit)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            validator.setDecimals(10)
+            return validator
+        if type_name == 'bool':
+            regex = QRegularExpression('^(?i)(true|false|1|0|yes|no|on|off|y|n)$')
+            return QRegularExpressionValidator(regex, line_edit)
+        return None
+
     def _apply_roi_to_parameters(self, roi: Mapping[str, object]) -> None:
         if not self._parameter_rows or not self._roi_key_map:
             return
         for roi_key, value in roi.items():
             targets = self._roi_key_map.get(str(roi_key))
-            print(f"roi_key: {roi_key}, targets: {targets}")
             if not targets:
                 continue
             for target_name in targets:
                 row = self._parameter_rows.get(target_name)
                 if not row:
                     continue
-                checkbox, line_edit, _, raw_default, default_label = row
+                checkbox, line_edit, parameter, default_value, default_label = row
                 checkbox.blockSignals(True)
                 checkbox.setChecked(True)
                 checkbox.blockSignals(False)
@@ -327,20 +366,33 @@ class PlanEditorWidget(QWidget):
 
     def _emit_submission(self) -> None:
         definition = self.current_plan()
+
         if definition is None:
             return
 
-        payload = {
-            "kind": self._current_kind,
+        queue_item = {
+            "item_type": "plan",
             "name": definition.name,
-            "parameters": {},
+            "kwargs": {},
         }
 
-        for name, (checkbox, line_edit, parameter, raw_default, default_label) in self._parameter_rows.items():
+        for name, (checkbox, line_edit, parameter, default_value, default_label) in self._parameter_rows.items():
+            expected_type = parameter.inferred_type() if hasattr(parameter, 'inferred_type') else (parameter.type_name or 'str')
             if checkbox.isChecked():
                 value_text = line_edit.text()
-            else:
-                value_text = raw_default
-            payload["parameters"][name] = value_text
+                try:
+                    value = parameter.coerce(value_text)
+                except (ValueError, TypeError):
+                    emit_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})")
+                    return
 
-        self.planSubmitted.emit(payload)
+            else:
+                value = default_value
+            queue_item['kwargs'][name] = value
+
+        if self._controller is None:
+            emit_status('No controller available to queue plan')
+            return
+
+        self._controller._api.item_add(queue_item)
+        emit_status(f"Plan '{definition.name}' queued")

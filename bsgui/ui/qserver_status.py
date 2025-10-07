@@ -78,7 +78,7 @@ class QueueServerStatusWidget(QWidget):
         if "connected" in status:
             self._apply_connected_state(status.get("connected"))
             self._connect_button.setEnabled(not status.get("connected"))
-            emit_status(f"QServer connected: {status.get('connected')}")
+            # emit_status(f"QServer connected: {status.get('connected')}")
 
         for key, value in status.items():
             if key == "connected":
@@ -95,7 +95,7 @@ class QueueServerStatusWidget(QWidget):
         if worker_status == "closed" or worker_status is None:
             self._start_re_button.setEnabled(True)
             self._stop_re_button.setEnabled(False)
-            self.clearPlansRequested.emit(worker_status)
+            self.clearPlansRequested.emit(worker_status or "")
             emit_status("RE is closed")
         elif worker_status == "initializing":
             self._start_re_button.setEnabled(False)
@@ -103,8 +103,8 @@ class QueueServerStatusWidget(QWidget):
             emit_status("RE is initializing")
         elif worker_status == "idle":
             self._start_re_button.setEnabled(False)
-            self.clearPlansRequested.emit(worker_status)
-            emit_status("RE is idle")
+            self.clearPlansRequested.emit(worker_status or "")
+            # emit_status("RE is idle")
             self._stop_re_button.setEnabled(True)
 
     def _apply_connected_state(self, value: Optional[Any]) -> None:
@@ -126,19 +126,17 @@ class QueueServerStatusWidget(QWidget):
         label = self._labels.get("worker_environment_state")
         if label is None:
             return
-            
-        if value == "closed" or value == "" or value is None:
-            if value is None or value == "":
-                value = self._default_labels.get("worker_environment_state", "Unknown")
-            text = value.capitalize()
+
+        text = self._format_value(value)
+        normalized = text.lower() if isinstance(text, str) else str(text).lower()
+        if normalized in {"closed", "unknown", "none", "false", ""}:
             color = "#c62828"
         else:
-            text = value.capitalize()
             color = "#2e7d32"
 
         label.setText(text)
         label.setStyleSheet(f"color: {color}; font-weight: bold;")
-        
+
 
     @staticmethod
     def _format_value(value: Any) -> str:
