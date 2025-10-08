@@ -79,7 +79,18 @@ tabs:
           y:
             - y_center_mm
             - y_center
-
+          dwell:
+            - dwell_time_ms
+            - dwell_time
+            - dwell_ms
+            - dwell_s
+            - dwell
+          stepsize_x:
+            - stepsize_x_mm
+            - stepsize_x
+          stepsize_y:
+            - stepsize_y_mm
+            - stepsize_y
 
       queue_status:
         enabled: true
@@ -160,7 +171,7 @@ tabs:
           "1": 1
           "2": 0
 
-  - key: qserver
+  - key: qserver_monitor
     title: Queue Monitor
     description: Monitor Bluesky Queue Server status, pending plans, and progress.
     start_expanded: true
@@ -191,7 +202,7 @@ layout:
   type: tabs
   tab_order:
     - scan_setup
-    - qserver
+    - qserver_monitor
   status_bar:
     enabled: true
     messages:

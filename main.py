@@ -16,7 +16,7 @@ from bsgui.config.registry import WidgetRegistry, registry
 from bsgui.ui.status_bus import get_status_bus, emit_status
 
 
-DEFAULT_WIDGET_KEYS = ["scan_setup", "qserver"]
+DEFAULT_WIDGET_KEYS = ["scan_setup", "qserver_monitor"]
 
 
 def load_config(path: pathlib.Path) -> dict:
@@ -203,7 +203,7 @@ def main(argv: List[str]) -> int:
                 if isinstance(loader_cfg, dict) and "search_paths" not in loader_cfg:
                     loader_cfg["search_paths"] = data_paths
 
-    qserver_options = extract_widget_options(tab_configs, "qserver")
+    qserver_options = extract_widget_options(tab_configs, "qserver_monitor")
     qserver_kwargs = {}
     poll_interval = qserver_options.get("poll_interval_ms")
     if isinstance(poll_interval, (int, float)):

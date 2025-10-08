@@ -96,16 +96,15 @@ class QueueServerStatusWidget(QWidget):
             self._start_re_button.setEnabled(True)
             self._stop_re_button.setEnabled(False)
             self.clearPlansRequested.emit(worker_status or "")
-            emit_status("RE is closed")
         elif worker_status == "initializing":
             self._start_re_button.setEnabled(False)
             self._stop_re_button.setEnabled(False)
-            emit_status("RE is initializing")
         elif worker_status == "idle":
             self._start_re_button.setEnabled(False)
             self.clearPlansRequested.emit(worker_status or "")
-            # emit_status("RE is idle")
             self._stop_re_button.setEnabled(True)
+            
+        emit_status(f"RE is {worker_status}")
 
     def _apply_connected_state(self, value: Optional[Any]) -> None:
         label = self._labels.get("connected")

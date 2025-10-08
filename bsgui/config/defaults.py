@@ -18,7 +18,7 @@ from ..ui.data_loader import PtychographyLoaderWidget, XRFLoaderWidget
 from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
 from ..ui.qserver_status import QueueServerStatusWidget
 from ..ui.qserver_console import QServerConsoleWidget
-from ..ui.qserver import QServerWidget
+from ..ui.qserver_monitor import QServerWidget
 
 def _coerce_paths(
     explicit_paths: Optional[Iterable[pathlib.Path]],
@@ -335,10 +335,10 @@ def register_default_widgets(
     target.register(
         WidgetDescriptor(
             key="scan_setup",
-            title=viewer_cfg.get("title", "Beamline Data Viewer"),
+            title=viewer_cfg.get("title", "Microscopy Beamline Data Acquisition"),
             description=viewer_cfg.get(
                 "description",
-                "Configure XRF and Ptychography loaders that share a plotting canvas.",
+                "Load X-ray data and prepare data acquisition bluesky plans.",
             ),
             factory=connect_scan_setup_widgets,
         )
@@ -353,7 +353,7 @@ def register_default_widgets(
 
     target.register(
         WidgetDescriptor(
-            key="qserver",
+            key="qserver_monitor",
             title="Queue Monitor",
             description="View Bluesky QServer queue, active plan, and history.",
             factory=lambda: QServerWidget(**q_kwargs),

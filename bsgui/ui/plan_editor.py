@@ -23,14 +23,12 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator
 from PySide6.QtCore import QRegularExpression
-
-from .status_bus import emit_status
-
 from ..core.qserver_controller import PlanDefinition, PlanParameter
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
     from ..core.qserver_controller import QServerController
 
+OVERHEAD_FACTOR = 3
 
 class PlanEditorWidget(QWidget):
     """Widget for browsing plan definitions and preparing submissions."""
@@ -113,25 +111,24 @@ class PlanEditorWidget(QWidget):
         button_layout.addStretch(1)
 
         self._batch_button = QPushButton("Batch Generation")
+        self._batch_button.setEnabled(False)
         self._add_button = QPushButton("Add to Queue")
         self._add_button.clicked.connect(self._emit_submission)
-        self._save_button = QPushButton("Save")
-        self._save_button.setEnabled(False)
         self._reset_button = QPushButton("Reset")
         self._reset_button.clicked.connect(self._populate_parameters)
-        self._cancel_button = QPushButton("Cancel")
-        self._cancel_button.setEnabled(False)
 
         for button in [
             self._batch_button,
             self._add_button,
-            self._save_button,
             self._reset_button,
-            self._cancel_button,
         ]:
             button_layout.addWidget(button)
 
         layout.addLayout(button_layout)
+
+        self._status_label = QLabel("")
+        self._status_label.setStyleSheet("color: #666666;")
+        layout.addWidget(self._status_label)
 
         return widget
 
@@ -141,12 +138,12 @@ class PlanEditorWidget(QWidget):
     def handle_point_drawn(self, point: Mapping[str, object]) -> None:
         """Record point coordinates emitted from the toolbar."""
         self._apply_roi_to_parameters(point)
-        emit_status("Point applied to plan parameters")
+        self._set_status("Point applied to plan parameters")
 
     def handle_roi_drawn(self, roi: Mapping[str, object]) -> None:
         """Receive ROI data emitted from the visualization toolbar."""
         self._apply_roi_to_parameters(roi)
-        emit_status("ROI applied to plan parameters")
+        self._set_status("ROI applied to plan parameters")
 
     def handle_plans_update(self, worker_status: str) -> None:
         if worker_status == "closed" or worker_status == "":
@@ -166,10 +163,6 @@ class PlanEditorWidget(QWidget):
             return
         self._definitions = definitions
         self._refresh_plan_combo()
-
-    # def load_definitions(self, definitions: Iterable[PlanDefinition]) -> None:
-    #     self._definitions.extend(definitions)
-    #     self._refresh_plan_combo()
 
     def current_plan(self) -> Optional[PlanDefinition]:
         index = self._plan_combo.currentIndex()
@@ -208,7 +201,7 @@ class PlanEditorWidget(QWidget):
             self._parameter_table.setRowCount(0)
 
     def _refresh_btn_state(self) -> None:
-        emit_status(f"Selected add mode: {self._current_kind}")
+        self._set_status(f"Selected add mode: {self._current_kind}")
         if self._current_kind == "single":
             self._batch_button.setEnabled(False)
             self._add_button.setEnabled(True)
@@ -275,14 +268,18 @@ class PlanEditorWidget(QWidget):
                     le.setEnabled(False)
                     le.setStyleSheet("color: #666666;")
                     le.setText(label)
+                self._update_eta_display()
 
             checkbox.toggled.connect(handle_toggle)
+            line_edit.textEdited.connect(lambda _text: self._update_eta_display())
 
             layout.addWidget(checkbox)
             layout.addWidget(line_edit, 1)
             self._parameter_table.setCellWidget(row, 1, container)
 
             self._parameter_rows[parameter.name] = (checkbox, line_edit, parameter, default_value, default_label)
+
+        self._update_eta_display()
 
     @staticmethod
     def _convert_extra_parameters(config: Any) -> List[PlanParameter]:
@@ -326,6 +323,33 @@ class PlanEditorWidget(QWidget):
             return QRegularExpressionValidator(regex, line_edit)
         return None
 
+    def _update_eta_display(self) -> None:
+        eta = self._get_plan_time()
+        if eta is None:
+            self._set_status("ETA unavailable", error=True)
+        else:
+            self._set_status(f"Estimated time: {eta:.2f} seconds", error=False)
+
+    def _extract_numeric_value(self, row: tuple) -> Optional[float]:
+        checkbox, line_edit, parameter, default_value, default_label = row
+        if checkbox.isChecked():
+            text = line_edit.text().strip()
+            if not text:
+                return None
+            try:
+                coerced = parameter.coerce(text)
+            except (ValueError, TypeError):
+                return None
+        else:
+            coerced = default_value
+        if coerced is None:
+            return None
+        try:
+            return float(coerced)
+        except (TypeError, ValueError):
+            return None
+
+
     def _apply_roi_to_parameters(self, roi: Mapping[str, object]) -> None:
         if not self._parameter_rows or not self._roi_key_map:
             return
@@ -344,6 +368,7 @@ class PlanEditorWidget(QWidget):
                 line_edit.setEnabled(True)
                 line_edit.setStyleSheet("")
                 line_edit.setText(str(value))
+        self._update_eta_display()
 
     @staticmethod
     def _format_default_label(text: str) -> str:
@@ -383,16 +408,55 @@ class PlanEditorWidget(QWidget):
                 try:
                     value = parameter.coerce(value_text)
                 except (ValueError, TypeError):
-                    emit_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})")
+                    self._set_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})", error=True)
                     return
 
             else:
                 value = default_value
+
+            if "stepsize" in name and value <= 0:
+                self._set_status(f"Invalid value '{value}' for parameter '{name}' (expected positive number)", error=True)
+                return
+
             queue_item['kwargs'][name] = value
 
         if self._controller is None:
-            emit_status('No controller available to queue plan')
+            self._set_status('No controller available to queue plan', error=True)
             return
 
         self._controller._api.item_add(queue_item)
-        emit_status(f"Plan '{definition.name}' queued")
+        self._set_status(f"Plan '{definition.name}' queued")
+
+    def _set_status(self, message: str, error: bool = False) -> None:
+        self._status_label.setText(message)
+        color = "#2e7d32" if not error else "#c62828"
+        self._status_label.setStyleSheet(f"color: {color};")
+
+    def _get_plan_time(self) -> Optional[float]:
+        required = ["width", "height", "stepsize_x", "stepsize_y", "dwell"]
+        values: Dict[str, float] = {}
+        for key in required:
+            targets = self._roi_key_map.get(key, [])
+            for target in targets:
+                row = self._parameter_rows.get(target)
+                if not row:
+                    continue
+                numeric = self._extract_numeric_value(row)
+                if numeric is not None:
+                    if key == "dwell" and "ms" in target:
+                        numeric /= 1000
+                    values[key] = numeric
+                    break
+        if len(values) != len(required):
+            return None
+
+        steps_x = values["stepsize_x"]
+        steps_y = values["stepsize_y"]
+        width = values["width"]
+        height = values["height"]
+        dwell = values["dwell"]
+        if any(value == 0 for value in [steps_x, steps_y, width, height, dwell]):
+            return None
+
+        return (width / steps_x) * (height / steps_y) * dwell * OVERHEAD_FACTOR
+

@@ -18,31 +18,31 @@ from PySide6.QtWidgets import (
 )
 
 
-@dataclass(frozen=True)
-class QueueItem:
-    """Representation of a queued or running plan."""
+# @dataclass(frozen=True)
+# class QueueItem:
+#     """Representation of a queued or running plan."""
 
-    uid: str
-    name: str
-    args: str
-    state: str
-
-
-@dataclass(frozen=True)
-class QueueSnapshot:
-    """Aggregate queue information returned by a client."""
-
-    pending: Sequence[QueueItem]
-    running: Optional[QueueItem]
-    completed: Sequence[QueueItem]
-    progress: Optional[int] = None  # percent 0-100
+#     uid: str
+#     name: str
+#     args: str
+#     state: str
 
 
-class BlueskyQueueClient(Protocol):
-    """Minimal protocol for fetching queue information from Bluesky QServer."""
+# @dataclass(frozen=True)
+# class QueueSnapshot:
+#     """Aggregate queue information returned by a client."""
 
-    def fetch_snapshot(self) -> QueueSnapshot:
-        ...
+#     pending: Sequence[QueueItem]
+#     running: Optional[QueueItem]
+#     completed: Sequence[QueueItem]
+#     progress: Optional[int] = None  # percent 0-100
+
+
+# class BlueskyQueueClient(Protocol):
+#     """Minimal protocol for fetching queue information from Bluesky QServer."""
+
+#     def fetch_snapshot(self) -> QueueSnapshot:
+#         ...
 
 
 class QServerWidget(QWidget):
