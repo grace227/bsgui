@@ -67,9 +67,6 @@ tabs:
             - sample_name
             - samplename
             - Sample_Name
-          comments:
-            - user_comment
-            - user_comments
           title:
             - user_comment
             - user_comments

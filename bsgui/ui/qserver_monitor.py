@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
+from .queue_controls import QueueTableCursorController
+
 from ..core.qserver_controller import QServerController, QueueSnapshot
 
 
@@ -45,11 +47,14 @@ class QServerMonitorWidget(QWidget):
 
         self._controller: Optional[QServerController] = None
         self._roi_key_map = self._normalize_roi_map(roi_key_map)
-        self._roi_value_aliases = {alias for values in self._roi_key_map.values() for alias in values}
-        self._user_columns = self._normalize_user_columns(columns)
+        self._roi_value_aliases = {
+            alias for values in self._roi_key_map.values() for alias in values if alias != "title"
+        }
+
         self._columns: list[QueueColumnSpec] = []
         self._pending_items: list[dict[str, Any]] = []
         self._completed_items: list[dict[str, Any]] = []
+        self._queue_controls: Optional[QueueTableCursorController] = None
 
         self._queue_table = QTableWidget(0, 0)
         self._queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -58,6 +63,7 @@ class QServerMonitorWidget(QWidget):
         self._queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._queue_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._configure_queue_table()
+        self._queue_controls = QueueTableCursorController(self._queue_table)
 
         self._active_label = QLabel("Idle")
         self._progress = QProgressBar()
@@ -162,6 +168,8 @@ class QServerMonitorWidget(QWidget):
         header = self._queue_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.Stretch)
+        vertical_header = self._queue_table.verticalHeader()
+        vertical_header.setSectionResizeMode(QHeaderView.Stretch)
         for index, spec in enumerate(self._columns):
             header_item = self._queue_table.horizontalHeaderItem(index)
             if header_item is None:
@@ -169,6 +177,10 @@ class QServerMonitorWidget(QWidget):
                 self._queue_table.setHorizontalHeaderItem(index, header_item)
             else:
                 header_item.setText(spec.label)
+        
+
+        if self._queue_controls is not None:
+            self._queue_controls.configure_header_behavior()
 
     def _ensure_columns(self, queue: Sequence[Mapping[str, Any]]) -> None:
         required: list[QueueColumnSpec] = []
@@ -181,15 +193,15 @@ class QServerMonitorWidget(QWidget):
             required.append(QueueColumnSpec(column_id, label, True))
 
         # Base plan name column
+        add("status", "Status")
         add("name", "Plan")
-
-        # User-specified columns (if any)
-        for spec in self._user_columns:
-            add(spec.column_id, spec.label)
 
         # ROI mapped columns in declared order
         for key in self._roi_key_map.keys():
-            label = key.replace("_", " ").title()
+            if key == "title":
+                label = "Comments"
+            else:   
+                label = key.replace("_", " ").title()
             add(key, label)
 
         # Dynamically add kwargs keys not already covered by ROI aliases
@@ -333,25 +345,6 @@ class QServerMonitorWidget(QWidget):
                 collected = [str(value) for value in values if isinstance(value, str)]
                 if collected:
                     normalized[key] = collected
-        return normalized
-
-    @staticmethod
-    def _normalize_user_columns(
-        columns: Optional[Sequence[Mapping[str, Any]]],
-    ) -> list[QueueColumnSpec]:
-        if not columns:
-            return []
-        normalized: list[QueueColumnSpec] = []
-        seen: set[str] = set()
-        for entry in columns:
-            if not isinstance(entry, Mapping):
-                continue
-            column_id = str(entry.get("id") or "").strip()
-            if not column_id or column_id in seen:
-                continue
-            seen.add(column_id)
-            label = str(entry.get("label") or column_id.title())
-            normalized.append(QueueColumnSpec(column_id, label, True))
         return normalized
 
     def _lookup_roi_value(self, column_id: str, item: Mapping[str, Any]) -> Any:
