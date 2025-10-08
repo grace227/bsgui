@@ -18,7 +18,37 @@ from ..ui.data_loader import PtychographyLoaderWidget, XRFLoaderWidget
 from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
 from ..ui.qserver_status import QueueServerStatusWidget
 from ..ui.qserver_console import QServerConsoleWidget
-from ..ui.qserver_monitor import QServerWidget
+from ..ui.qserver_monitor import QServerMonitorWidget
+
+
+def _parse_env_file(path: pathlib.Path) -> Mapping[str, str]:
+    """Return key/value pairs defined in a .env file."""
+
+    env: dict[str, str] = {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, sep, value = line.partition("=")
+                if not sep:
+                    continue
+                env[key.strip()] = value.strip().strip("'\"")
+    except OSError:
+        return {}
+    return env
+
+
+def _locate_env_file() -> Optional[pathlib.Path]:
+    """Search for a .env file starting from this module directory upward."""
+
+    start_dir = pathlib.Path(__file__).resolve().parent
+    for directory in (start_dir, *start_dir.parents):
+        candidate = directory / ".env"
+        if candidate.exists():
+            return candidate
+    return None
 
 def _coerce_paths(
     explicit_paths: Optional[Iterable[pathlib.Path]],
@@ -209,6 +239,12 @@ def register_default_widgets(
             control_address = os.getenv("QSERVER_ZMQ_CONTROL_ADDRESS")
             info_address = os.getenv("QSERVER_ZMQ_INFO_ADDRESS")
             if not control_address or not info_address:
+                env_file = _locate_env_file()
+                if env_file:
+                    env_vars = _parse_env_file(env_file)
+                    control_address = control_address or env_vars.get("QSERVER_ZMQ_CONTROL_ADDRESS")
+                    info_address = info_address or env_vars.get("QSERVER_ZMQ_INFO_ADDRESS")
+            if not control_address or not info_address:
                 raise RuntimeError(
                     "QServer ZMQ environment variables 'QSERVER_ZMQ_CONTROL_ADDRESS' and "
                     "'QSERVER_ZMQ_INFO_ADDRESS' must be set."
@@ -224,13 +260,23 @@ def register_default_widgets(
             )
         return _qserver_controller
 
+    roi_key_map: Optional[Mapping[str, Sequence[str]]] = None
+
     plan_editor_cfg = viewer_cfg.get("plan_editor")
     if isinstance(plan_editor_cfg, dict) and plan_editor_cfg.get("enabled", True):
         plans_cfg = plan_editor_cfg.get("plans", [])
         kinds_cfg = plan_editor_cfg.get("kinds")
         kinds = list(kinds_cfg) if isinstance(kinds_cfg, Sequence) else None
-        kind_parameters = plan_editor_cfg.get("kind_parameters") if isinstance(plan_editor_cfg.get("kind_parameters"), Mapping) else None
-        roi_key_map = plan_editor_cfg.get("roi_key_map") if isinstance(plan_editor_cfg.get("roi_key_map"), Mapping) else None
+        kind_parameters = (
+            plan_editor_cfg.get("kind_parameters")
+            if isinstance(plan_editor_cfg.get("kind_parameters"), Mapping)
+            else None
+        )
+        roi_key_map = (
+            plan_editor_cfg.get("roi_key_map")
+            if isinstance(plan_editor_cfg.get("roi_key_map"), Mapping)
+            else None
+        )
 
         def make_plan_editor() -> tuple[QWidget, str]:
             controller = ensure_controller()
@@ -344,18 +390,29 @@ def register_default_widgets(
         )
     )
 
-    allowed_qserver_kwargs = {"client", "poll_interval_ms"}
+    allowed_qserver_kwargs = {"poll_interval_ms", "roi_key_map", "columns"}
     q_kwargs = {
         key: value
         for key, value in (qserver_kwargs or {}).items()
         if key in allowed_qserver_kwargs
     }
 
+    def make_qserver_monitor() -> QWidget:
+        monitor_kwargs = dict(q_kwargs)
+        monitor_kwargs.pop("poll_interval_ms", None)
+        controller = ensure_controller()
+        monitor_kwargs.setdefault("controller", controller)
+        if roi_key_map and "roi_key_map" not in monitor_kwargs:
+            monitor_kwargs["roi_key_map"] = roi_key_map
+        widget = QServerMonitorWidget(**monitor_kwargs)
+        controller.start_polling()
+        return widget
+
     target.register(
         WidgetDescriptor(
             key="qserver_monitor",
             title="Queue Monitor",
             description="View Bluesky QServer queue, active plan, and history.",
-            factory=lambda: QServerWidget(**q_kwargs),
+            factory=make_qserver_monitor,
         )
     )

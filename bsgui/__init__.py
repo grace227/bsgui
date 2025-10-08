@@ -13,7 +13,7 @@ from .ui import (
     PlanParameter,
     PlotCanvasWidget,
     PtychographyLoaderWidget,
-    QServerWidget,
+    QServerMonitorWidget,
     XRFLoaderWidget,
 )
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import threading
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Mapping, Any
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, Signal
 
 from .qserver_api import QServerAPI
 
@@ -100,7 +100,8 @@ class QServerController(QObject):
         super().__init__(parent)
         self._api = api or QServerAPI()
         self._poll_interval_ms = poll_interval_ms
-        self._timer: Optional[QTimer] = None
+        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_stop = threading.Event()
         self._status_keys: Optional[Tuple[str, ...]] = tuple(status_keys) if status_keys else None
         self._console_thread: Optional[threading.Thread] = None
         self._console_stop = threading.Event()
@@ -114,16 +115,36 @@ class QServerController(QObject):
             self.start_polling()
 
     def start_polling(self) -> None:
-        if self._timer is None:
-            self._timer = QTimer(self)
-            self._timer.timeout.connect(self._poll)
-        if self._timer.isActive():
+        if self._poll_thread and self._poll_thread.is_alive():
             return
-        self._timer.start(self._poll_interval_ms)
+        self._poll_stop.clear()
+
+        def _target() -> None:
+            interval = max(self._poll_interval_ms, 0)
+            wait_seconds = interval / 1000 if interval else 0
+            try:
+                while not self._poll_stop.is_set():
+                    self._poll()
+                    if wait_seconds:
+                        if self._poll_stop.wait(wait_seconds):
+                            break
+                    else:
+                        self._poll_stop.wait(0.001)
+            finally:
+                self._poll_thread = None
+
+        self._poll_thread = threading.Thread(target=_target, name="QServerStatusPoller", daemon=True)
+        self._poll_thread.start()
 
     def stop_polling(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
+        thread = self._poll_thread
+        if thread and thread.is_alive():
+            self._poll_stop.set()
+            if threading.current_thread() is thread:
+                return
+            thread.join(timeout=1.0)
+        self._poll_thread = None
+        self._poll_stop.clear()
         self.stop_console_monitor()
 
     def start_console_monitor(self) -> None:
@@ -187,32 +208,56 @@ class QServerController(QObject):
         return status
 
     def _fetch_queue(self) -> Optional[QueueSnapshot]:
+        pending: list[dict] = []
+        running: Optional[dict] = None
+        completed: list[dict] = []
+
         try:
-            snapshot = self._api.get_queue()
-            running = snapshot.get("running_queue_uid")
-            active = None
-            if running:
-                active = {
-                    "uid": running,
-                    "name": snapshot.get("running_plan_uid", ""),
-                    "state": snapshot.get("running_plan_state", ""),
-                }
-            pending = snapshot.get("queue", [])
-            completed = snapshot.get("history", [])
-            return QueueSnapshot(
-                pending=pending,
-                running=active,
-                completed=completed,
-                progress=None,
-            )
-        except Exception:  # pragma: no cover - network path
+            queue_response = self._api.queue_get()
+            history_response = self._api.history_get()
+        except Exception:
+            _logger.exception("Error requesting queue information")
             return None
+
+        if isinstance(queue_response, Mapping) and queue_response.get("success"):
+            items = queue_response.get("items")
+            if isinstance(items, Sequence):
+                pending = [item for item in items if isinstance(item, Mapping)]
+            active = queue_response.get("running_item")
+            if isinstance(active, Mapping):
+                running = dict(active)
+
+        if isinstance(history_response, Mapping) and history_response.get("success"):
+            items = history_response.get("items")
+            if isinstance(items, Sequence):
+                completed = [item for item in items if isinstance(item, Mapping)]
+
+        return QueueSnapshot(
+            pending=[dict(item) for item in pending],
+            running=running,
+            completed=[dict(item) for item in completed],
+            progress=self._extract_progress(running),
+        )
+
+    @staticmethod
+    def _extract_progress(running_item: Optional[Mapping[str, Any]]) -> Optional[int]:
+        if not isinstance(running_item, Mapping):
+            return None
+        progress = running_item.get("progress")
+        if isinstance(progress, (int, float)):
+            return int(progress)
+        return None
+ 
 
     # ----------------------------------------------------------------------------
     # Public convenience
 
     def fetch_snapshot(self) -> Optional[QueueSnapshot]:
-        return self._fetch_queue()
+        try:
+            return self._fetch_queue()
+        except Exception:
+            _logger.exception("Error fetching queue snapshot")
+            return None
 
     def get_allowed_plans(self, *, normalize: bool = False) -> Dict[str, dict]:
         try:

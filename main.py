@@ -6,7 +6,7 @@ import argparse
 import logging
 import pathlib
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import List, Optional
 
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
@@ -208,6 +208,17 @@ def main(argv: List[str]) -> int:
     poll_interval = qserver_options.get("poll_interval_ms")
     if isinstance(poll_interval, (int, float)):
         qserver_kwargs["poll_interval_ms"] = int(poll_interval)
+    roi_key_map = qserver_options.get("roi_key_map")
+    if isinstance(roi_key_map, Mapping):
+        qserver_kwargs["roi_key_map"] = dict(roi_key_map)
+    columns = qserver_options.get("columns")
+    if isinstance(columns, Sequence):
+        normalized_columns = []
+        for entry in columns:
+            if isinstance(entry, Mapping):
+                normalized_columns.append(dict(entry))
+        if normalized_columns:
+            qserver_kwargs["columns"] = normalized_columns
 
     register_default_widgets(
         data_paths=data_paths,

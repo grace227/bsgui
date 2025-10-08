@@ -79,6 +79,10 @@ tabs:
           y:
             - y_center_mm
             - y_center
+          z: 
+            - z_center_mm
+            - z_center
+            - sample_z
           dwell:
             - dwell_time_ms
             - dwell_time
@@ -176,7 +180,7 @@ tabs:
     description: Monitor Bluesky Queue Server status, pending plans, and progress.
     start_expanded: true
     options:
-      poll_interval_ms: 2000
+      poll_interval_ms: 5000
       auto_connect: true
       show_completed_limit: 15
       progress:
@@ -188,15 +192,12 @@ tabs:
           info_env_var: QSERVER_ZMQ_INFO_ADDRESS
           control_env_var: QSERVER_ZMQ_CONTROL_ADDRESS
       columns:
-        - id: plan
-          label: Plan
-          stretch: true
-        - id: args
-          label: Arguments
+        - id: index
+          label: ID
           stretch: true
         - id: state
-          label: State
-          stretch: false
+          label: Status
+          stretch: true
 
 layout:
   type: tabs

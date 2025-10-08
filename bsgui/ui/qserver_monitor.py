@@ -3,63 +3,60 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt
+
 from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
     QProgressBar,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView
+
+from ..core.qserver_controller import QServerController, QueueSnapshot
 
 
-# @dataclass(frozen=True)
-# class QueueItem:
-#     """Representation of a queued or running plan."""
-
-#     uid: str
-#     name: str
-#     args: str
-#     state: str
+@dataclass(frozen=True)
+class QueueColumnSpec:
+    column_id: str
+    label: str
+    stretch: bool = False
 
 
-# @dataclass(frozen=True)
-# class QueueSnapshot:
-#     """Aggregate queue information returned by a client."""
-
-#     pending: Sequence[QueueItem]
-#     running: Optional[QueueItem]
-#     completed: Sequence[QueueItem]
-#     progress: Optional[int] = None  # percent 0-100
-
-
-# class BlueskyQueueClient(Protocol):
-#     """Minimal protocol for fetching queue information from Bluesky QServer."""
-
-#     def fetch_snapshot(self) -> QueueSnapshot:
-#         ...
-
-
-class QServerWidget(QWidget):
+class QServerMonitorWidget(QWidget):
     """Widget that displays queue state and progress for Bluesky QServer."""
 
     def __init__(
         self,
-        client: Optional[BlueskyQueueClient] = None,
-        poll_interval_ms: int = 2000,
+        *,
+        controller: Optional[QServerController] = None,
+        roi_key_map: Optional[Mapping[str, Sequence[str]]] = None,
+        columns: Optional[Sequence[Mapping[str, Any]]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
 
-        self._client = client
-        self._queue_table = QTableWidget(0, 3)
-        self._queue_table.setHorizontalHeaderLabels(["Plan", "Arguments", "State"])
-        self._queue_table.horizontalHeader().setStretchLastSection(True)
+        self._controller: Optional[QServerController] = None
+        self._roi_key_map = self._normalize_roi_map(roi_key_map)
+        self._roi_value_aliases = {alias for values in self._roi_key_map.values() for alias in values}
+        self._user_columns = self._normalize_user_columns(columns)
+        self._columns: list[QueueColumnSpec] = []
+
+        self._queue_table = QTableWidget(0, 0)
+        self._queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._queue_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._queue_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._queue_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._configure_queue_table()
 
         self._active_label = QLabel("Idle")
         self._progress = QProgressBar()
@@ -70,55 +67,313 @@ class QServerWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Queued Plans"))
-        layout.addWidget(self._queue_table)
+        table_container = QScrollArea()
+        table_container.setWidgetResizable(True)
+        table_container.setWidget(self._queue_table)
+        layout.addWidget(table_container)
         layout.addWidget(QLabel("Active Plan"))
         layout.addWidget(self._active_label)
         layout.addWidget(self._progress)
         layout.addWidget(QLabel("Recently Completed"))
         layout.addWidget(self._completed_list)
 
-        self._timer: Optional[QTimer] = None
-        if self._client is not None:
-            self._timer = QTimer(self)
-            self._timer.timeout.connect(self.refresh_from_client)
-            self._timer.start(poll_interval_ms)
+        if controller is not None:
+            self.set_controller(controller)
 
-    def refresh_from_client(self) -> None:
-        if self._client is None:
+    # ------------------------------------------------------------------
+    # Controller wiring
+
+    def set_controller(self, controller: Optional[QServerController]) -> None:
+        if controller is self._controller:
             return
-        snapshot = self._client.fetch_snapshot()
-        self.update_queue(snapshot.pending)
-        self.update_active(snapshot.running, snapshot.progress)
-        self.update_completed(snapshot.completed)
+        if self._controller is not None:
+            try:
+                self._controller.queueUpdated.disconnect(self._handle_queue_updated)
+            except (RuntimeError, AttributeError):
+                pass
+        self._controller = controller
+        if controller is None:
+            return
+        controller.queueUpdated.connect(self._handle_queue_updated)
+        snapshot = controller.fetch_snapshot()
+        if snapshot:
+            self._apply_snapshot(snapshot)
 
-    def update_queue(self, queue: Sequence[QueueItem]) -> None:
+    # ------------------------------------------------------------------
+    # Snapshot/application helpers
+
+    def _handle_queue_updated(self, snapshot: QueueSnapshot) -> None:
+        self._apply_snapshot(snapshot)
+
+    def _apply_snapshot(self, snapshot: QueueSnapshot) -> None:
+        self.update_completed(snapshot.completed or [])
+        self.update_queue(snapshot.pending or [])
+        self.update_active(snapshot.running, snapshot.progress)
+
+    # ------------------------------------------------------------------
+    # View helpers
+
+    def update_queue(self, queue: Sequence[Mapping[str, Any]]) -> None:
+        self._ensure_columns(queue)
         self._queue_table.setRowCount(len(queue))
         for row, item in enumerate(queue):
-            self._queue_table.setItem(row, 0, QTableWidgetItem(item.name))
-            self._queue_table.setItem(row, 1, QTableWidgetItem(item.args))
-            self._queue_table.setItem(row, 2, QTableWidgetItem(item.state))
+            for column_index, spec in enumerate(self._columns):
+                value = self._format_queue_value(spec.column_id, item, row)
+                self._queue_table.setItem(row, column_index, QTableWidgetItem(value))
 
-    def update_active(self, item: Optional[QueueItem], progress: Optional[int]) -> None:
-        if item is None:
+    def update_active(
+        self,
+        item: Optional[Mapping[str, Any]],
+        progress: Optional[int],
+    ) -> None:
+        if not isinstance(item, Mapping):
             self._active_label.setText("Idle")
+            self._progress.setRange(0, 100)
             self._progress.setValue(0)
-            self._progress.setMaximum(100)
             return
 
-        self._active_label.setText(f"{item.name} ({item.uid[:8]})")
-        if progress is None:
-            self._progress.setRange(0, 0)  # busy indicator
-        else:
-            self._progress.setRange(0, 100)
-            self._progress.setValue(max(0, min(progress, 100)))
+        plan_name = self._extract_item_field(item, "name") or "Unknown"
+        uid = self._extract_item_field(item, "uid") or self._extract_item_field(item, "item_uid")
+        display_uid = f" ({str(uid)[:8]})" if uid else ""
+        self._active_label.setText(f"{plan_name}{display_uid}")
 
-    def update_completed(self, completed: Sequence[QueueItem]) -> None:
+        if progress is None:
+            self._progress.setRange(0, 0)
+        else:
+            value = max(0, min(int(progress), 100))
+            self._progress.setRange(0, 100)
+            self._progress.setValue(value)
+
+    def update_completed(self, completed: Sequence[Mapping[str, Any]]) -> None:
         self._completed_list.clear()
         for item in completed:
-            label = f"{item.name} – {item.state}"
-            list_item = QListWidgetItem(label)
-            self._completed_list.addItem(list_item)
+            plan_name = self._extract_item_field(item, "name") or "Unknown"
+            state = (
+                self._extract_item_field(item, "state")
+                or item.get("state")
+                or item.get("status")
+                or ""
+            )
+            if state:
+                label = f"{plan_name} – {state}"
+            else:
+                label = plan_name
+            self._completed_list.addItem(QListWidgetItem(label))
 
-    def stop_polling(self) -> None:
-        if self._timer is not None:
-            self._timer.stop()
+    # ------------------------------------------------------------------
+    # Internal utilities
+
+    def _configure_queue_table(self) -> None:
+        header = self._queue_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.Stretch)
+        for index, spec in enumerate(self._columns):
+            header_item = self._queue_table.horizontalHeaderItem(index)
+            if header_item is None:
+                header_item = QTableWidgetItem(spec.label)
+                self._queue_table.setHorizontalHeaderItem(index, header_item)
+            else:
+                header_item.setText(spec.label)
+
+    def _ensure_columns(self, queue: Sequence[Mapping[str, Any]]) -> None:
+        required: list[QueueColumnSpec] = []
+        seen: set[str] = set()
+
+        def add(column_id: str, label: str) -> None:
+            if not column_id or column_id in seen:
+                return
+            seen.add(column_id)
+            required.append(QueueColumnSpec(column_id, label, True))
+
+        # Base plan name column
+        add("name", "Plan")
+
+        # User-specified columns (if any)
+        for spec in self._user_columns:
+            add(spec.column_id, spec.label)
+
+        # ROI mapped columns in declared order
+        for key in self._roi_key_map.keys():
+            label = key.replace("_", " ").title()
+            add(key, label)
+
+        # Dynamically add kwargs keys not already covered by ROI aliases
+        for item in queue:
+            if not isinstance(item, Mapping):
+                continue
+            kwargs = item.get("kwargs")
+            if not isinstance(kwargs, Mapping):
+                continue
+            for key in kwargs.keys():
+                if key in self._roi_value_aliases:
+                    continue
+                label = str(key).replace("_", " ").title()
+                add(str(key), label)
+
+        if len(required) != len(self._columns) or any(a.column_id != b.column_id for a, b in zip(required, self._columns)):
+            self._columns = required
+            self._queue_table.setColumnCount(len(self._columns))
+            self._configure_queue_table()
+
+    def _format_queue_value(
+        self,
+        column_id: str,
+        item: Mapping[str, Any],
+        row_index: int,
+    ) -> str:
+        if column_id == "index":
+            return str(row_index + 1)
+        if column_id in self._roi_key_map:
+            roi_value = self._lookup_roi_value(column_id, item)
+            if roi_value is not None:
+                return self._format_scalar(roi_value)
+        if column_id == "name":
+            return str(self._extract_item_field(item, "name") or item.get("name") or "Unknown")
+        kwargs = item.get("kwargs") if isinstance(item, Mapping) else None
+        if isinstance(kwargs, Mapping) and column_id in kwargs:
+            return self._format_scalar(kwargs.get(column_id))
+        value = self._extract_item_field(item, column_id)
+        if column_id in {"plan", "name"}:
+            return str(value or item.get("name") or "Unknown")
+        if column_id in {"state", "status"}:
+            return str(value or item.get("state") or item.get("status") or "Pending")
+        if column_id in {"uid", "item_uid"}:
+            uid = value or item.get("item_uid") or item.get("uid")
+            return str(uid or "")
+        if column_id == "args":
+            args = value or item.get("args") or []
+            return self._format_sequence(args)
+        if column_id == "kwargs":
+            kwargs = value or item.get("kwargs") or {}
+            if isinstance(kwargs, Mapping):
+                return ", ".join(f"{key}={self._format_scalar(val)}" for key, val in kwargs.items())
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+            return self._format_sequence(value)
+        if isinstance(value, Mapping):
+            return ", ".join(f"{key}={self._format_scalar(val)}" for key, val in value.items())
+        if value is None:
+            fallback = item.get(column_id)
+            if isinstance(fallback, Sequence) and not isinstance(fallback, (str, bytes)):
+                return self._format_sequence(fallback)
+            if isinstance(fallback, Mapping):
+                return ", ".join(f"{key}={self._format_scalar(val)}" for key, val in fallback.items())
+            if fallback is None:
+                return ""
+            return self._format_scalar(fallback)
+        return self._format_scalar(value)
+
+    @staticmethod
+    def _format_scalar(value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _format_sequence(value: Iterable[Any]) -> str:
+        return ", ".join(str(entry) for entry in value)
+
+    @staticmethod
+    def _extract_item_field(item: Mapping[str, Any], key: str) -> Any:
+        if not isinstance(item, Mapping):
+            return None
+
+        sentinel = object()
+        key_parts = key.split(".") if isinstance(key, str) and "." in key else [key]
+
+        def resolve(mapping: Mapping[str, Any]) -> Any:
+            current: Any = mapping
+            for part in key_parts:
+                if isinstance(current, Mapping):
+                    if part in current:
+                        current = current.get(part)
+                    else:
+                        return sentinel
+                elif isinstance(current, Sequence) and not isinstance(current, (str, bytes)):
+                    next_value = sentinel
+                    for entry in current:
+                        if isinstance(entry, Mapping) and part in entry:
+                            next_value = entry.get(part)
+                            break
+                    if next_value is sentinel:
+                        return sentinel
+                    current = next_value
+                else:
+                    return sentinel
+            return current
+
+        for candidate in (
+            item,
+            item.get("kwargs"),
+            item.get("result"),
+            item.get("metadata"),
+            item.get("item"),
+        ):
+            if isinstance(candidate, Mapping):
+                value = resolve(candidate)
+                if value is not sentinel:
+                    return value
+
+        return None
+
+    @staticmethod
+    def _normalize_roi_map(
+        roi_key_map: Optional[Mapping[str, Sequence[str]]],
+    ) -> dict[str, list[str]]:
+        normalized: dict[str, list[str]] = {}
+        if not isinstance(roi_key_map, Mapping):
+            return normalized
+        for key, values in roi_key_map.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(values, str):
+                normalized[key] = [values]
+            elif isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+                collected = [str(value) for value in values if isinstance(value, str)]
+                if collected:
+                    normalized[key] = collected
+        return normalized
+
+    @staticmethod
+    def _normalize_user_columns(
+        columns: Optional[Sequence[Mapping[str, Any]]],
+    ) -> list[QueueColumnSpec]:
+        if not columns:
+            return []
+        normalized: list[QueueColumnSpec] = []
+        seen: set[str] = set()
+        for entry in columns:
+            if not isinstance(entry, Mapping):
+                continue
+            column_id = str(entry.get("id") or "").strip()
+            if not column_id or column_id in seen:
+                continue
+            seen.add(column_id)
+            label = str(entry.get("label") or column_id.title())
+            normalized.append(QueueColumnSpec(column_id, label, True))
+        return normalized
+
+    def _lookup_roi_value(self, column_id: str, item: Mapping[str, Any]) -> Any:
+        candidates = self._roi_key_map.get(column_id, [])
+        if not candidates:
+            return None
+
+        def _check_mapping(mapping: Mapping[str, Any]) -> Any:
+            for candidate in candidates:
+                if candidate in mapping:
+                    value = mapping.get(candidate)
+                    if value is not None:
+                        return value
+            return None
+
+        kwargs = item.get("kwargs")
+        if isinstance(kwargs, Mapping):
+            value = _check_mapping(kwargs)
+            if value is not None:
+                return value
+
+        for candidate in candidates:
+            value = self._extract_item_field(item, candidate)
+            if value is not None:
+                return value
+
+        return None
