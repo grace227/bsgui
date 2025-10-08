@@ -63,6 +63,13 @@ tabs:
               description: Step size of the iterate variable
               default: 0.1
         roi_key_map:
+          samplename:
+            - sample_name
+            - samplename
+            - Sample_Name
+          comments:
+            - user_comment
+            - user_comments
           title:
             - user_comment
             - user_comments

@@ -10,7 +10,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
-    QListWidgetItem,
     QProgressBar,
     QScrollArea,
     QSizePolicy,
@@ -49,6 +48,8 @@ class QServerMonitorWidget(QWidget):
         self._roi_value_aliases = {alias for values in self._roi_key_map.values() for alias in values}
         self._user_columns = self._normalize_user_columns(columns)
         self._columns: list[QueueColumnSpec] = []
+        self._pending_items: list[dict[str, Any]] = []
+        self._completed_items: list[dict[str, Any]] = []
 
         self._queue_table = QTableWidget(0, 0)
         self._queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -114,12 +115,8 @@ class QServerMonitorWidget(QWidget):
     # View helpers
 
     def update_queue(self, queue: Sequence[Mapping[str, Any]]) -> None:
-        self._ensure_columns(queue)
-        self._queue_table.setRowCount(len(queue))
-        for row, item in enumerate(queue):
-            for column_index, spec in enumerate(self._columns):
-                value = self._format_queue_value(spec.column_id, item, row)
-                self._queue_table.setItem(row, column_index, QTableWidgetItem(value))
+        self._pending_items = [self._prepare_display_item(item) for item in queue]
+        self._refresh_queue_table()
 
     def update_active(
         self,
@@ -146,22 +143,20 @@ class QServerMonitorWidget(QWidget):
 
     def update_completed(self, completed: Sequence[Mapping[str, Any]]) -> None:
         self._completed_list.clear()
-        for item in completed:
-            plan_name = self._extract_item_field(item, "name") or "Unknown"
-            state = (
-                self._extract_item_field(item, "state")
-                or item.get("state")
-                or item.get("status")
-                or ""
-            )
-            if state:
-                label = f"{plan_name} – {state}"
-            else:
-                label = plan_name
-            self._completed_list.addItem(QListWidgetItem(label))
+        self._completed_items = [self._prepare_display_item(item, completed=True) for item in completed]
+        self._refresh_queue_table()
 
     # ------------------------------------------------------------------
     # Internal utilities
+
+    def _refresh_queue_table(self) -> None:
+        all_items: list[Mapping[str, Any]] = [*self._pending_items, *self._completed_items]
+        self._ensure_columns(all_items)
+        self._queue_table.setRowCount(len(all_items))
+        for row, item in enumerate(all_items):
+            for column_index, spec in enumerate(self._columns):
+                value = self._format_queue_value(spec.column_id, item, row)
+                self._queue_table.setItem(row, column_index, QTableWidgetItem(value))
 
     def _configure_queue_table(self) -> None:
         header = self._queue_table.horizontalHeader()
@@ -201,14 +196,21 @@ class QServerMonitorWidget(QWidget):
         for item in queue:
             if not isinstance(item, Mapping):
                 continue
+            kwargs_sources: list[Mapping[str, Any]] = []
             kwargs = item.get("kwargs")
-            if not isinstance(kwargs, Mapping):
-                continue
-            for key in kwargs.keys():
-                if key in self._roi_value_aliases:
-                    continue
-                label = str(key).replace("_", " ").title()
-                add(str(key), label)
+            if isinstance(kwargs, Mapping):
+                kwargs_sources.append(kwargs)
+            nested_item = item.get("item")
+            if isinstance(nested_item, Mapping):
+                nested_kwargs = nested_item.get("kwargs")
+                if isinstance(nested_kwargs, Mapping):
+                    kwargs_sources.append(nested_kwargs)
+            for mapping in kwargs_sources:
+                for key in mapping.keys():
+                    if key in self._roi_value_aliases:
+                        continue
+                    label = str(key).replace("_", " ").title()
+                    add(str(key), label)
 
         if len(required) != len(self._columns) or any(a.column_id != b.column_id for a, b in zip(required, self._columns)):
             self._columns = required
@@ -370,6 +372,13 @@ class QServerMonitorWidget(QWidget):
             value = _check_mapping(kwargs)
             if value is not None:
                 return value
+        nested_item = item.get("item")
+        if isinstance(nested_item, Mapping):
+            nested_kwargs = nested_item.get("kwargs")
+            if isinstance(nested_kwargs, Mapping):
+                value = _check_mapping(nested_kwargs)
+                if value is not None:
+                    return value
 
         for candidate in candidates:
             value = self._extract_item_field(item, candidate)
@@ -377,3 +386,47 @@ class QServerMonitorWidget(QWidget):
                 return value
 
         return None
+
+    @staticmethod
+    def _prepare_display_item(item: Mapping[str, Any] | Any, *, completed: bool = False) -> dict[str, Any]:
+        if isinstance(item, Mapping):
+            normalized: dict[str, Any] = dict(item)
+        else:
+            normalized = {"name": str(item)}
+
+        nested_item = normalized.get("item")
+        if isinstance(nested_item, Mapping):
+            nested = dict(nested_item)
+            normalized["item"] = nested
+            normalized.setdefault("name", nested.get("name"))
+            if "kwargs" not in normalized and isinstance(nested.get("kwargs"), Mapping):
+                normalized["kwargs"] = dict(nested["kwargs"])
+
+        kwargs = normalized.get("kwargs")
+        if isinstance(kwargs, Mapping):
+            normalized["kwargs"] = dict(kwargs)
+
+        if completed:
+            nested = normalized.get("item")
+            if isinstance(nested, Mapping):
+                exit_status_from_item = nested.get("exit_status")
+                status_from_item = nested.get("status")
+                if exit_status_from_item:
+                    normalized["exit_status"] = exit_status_from_item
+                if status_from_item:
+                    normalized.setdefault("status", status_from_item)
+
+            result = normalized.get("result")
+            if isinstance(result, Mapping):
+                status_from_result = result.get("status") or result.get("state")
+                exit_status_from_result = result.get("exit_status")
+                if status_from_result:
+                    normalized["status"] = status_from_result
+                if exit_status_from_result and "exit_status" not in normalized:
+                    normalized["exit_status"] = exit_status_from_result
+
+            normalized.setdefault("status", "completed")
+            normalized.setdefault("state", normalized.get("status"))
+
+        normalized.setdefault("name", "Unknown")
+        return normalized
