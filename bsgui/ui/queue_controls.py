@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Optional, Sequence
+from typing import Callable, Mapping, Optional, Sequence
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QAbstractItemView, QTableWidget
+from shiboken6 import Shiboken
 
 from ..core.qserver_controller import QServerController
 from .status_bus import emit_status
@@ -22,11 +23,13 @@ class QueueTableCursorController(QObject):
         table: QTableWidget,
         *,
         controller: Optional[QServerController] = None,
+        refresh_callback: Optional[Callable[[str, int], None]] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent or table)
         self._table = table
         self._controller = controller
+        self._refresh_callback = refresh_callback
 
         self._pending_uids: list[str] = []
         self._pending_row_count = 0
@@ -36,6 +39,7 @@ class QueueTableCursorController(QObject):
 
         self._configure_table_widget()
         table.viewport().installEventFilter(self)
+        table.destroyed.connect(self._handle_table_destroyed)
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -55,7 +59,12 @@ class QueueTableCursorController(QObject):
     # Qt hooks
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        if obj is self._table.viewport():
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return False
+
+        viewport = table.viewport() if Shiboken.isValid(table) else None
+        if obj is viewport:
             if event.type() in {QEvent.DragEnter, QEvent.DragMove}:
                 self._capture_pending_drag()
             elif event.type() == QEvent.Drop:
@@ -68,6 +77,8 @@ class QueueTableCursorController(QObject):
 
     def _configure_table_widget(self) -> None:
         table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setSelectionMode(QAbstractItemView.SingleSelection)
         table.setDragDropOverwriteMode(False)
@@ -77,6 +88,10 @@ class QueueTableCursorController(QObject):
         table.setDragDropMode(QAbstractItemView.NoDragDrop)
 
     def _update_drag_state(self) -> None:
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            self._drag_enabled = False
+            return
         enabled = (
             bool(self._controller)
             and self._pending_row_count > 1
@@ -87,9 +102,9 @@ class QueueTableCursorController(QObject):
 
         self._drag_enabled = enabled
         mode = QAbstractItemView.InternalMove if enabled else QAbstractItemView.NoDragDrop
-        self._table.setDragDropMode(mode)
-        self._table.viewport().setAcceptDrops(enabled)
-        self._table.setDefaultDropAction(Qt.MoveAction if enabled else Qt.IgnoreAction)
+        table.setDragDropMode(mode)
+        table.viewport().setAcceptDrops(enabled)
+        table.setDefaultDropAction(Qt.MoveAction if enabled else Qt.IgnoreAction)
 
     def _process_pending_reorder(self, drop_event: Optional[QDropEvent] = None) -> None:
         if not self._drag_enabled:
@@ -130,19 +145,27 @@ class QueueTableCursorController(QObject):
         if isinstance(response, Mapping):
             success = bool(response.get("success", False))
             message = response.get("msg", message) or message
+            self._table.selectRow(target_row)
 
         emit_status(message if success else message or "Queue reorder request failed.")
+        if success and self._refresh_callback is not None:
+            self._refresh_callback(uid, target_row)
         self._reset_pending_state()
 
     def _capture_pending_drag(self) -> None:
-        selection = self._table.selectionModel()
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            self._pending_drag_uid = None
+            return
+
+        selection = table.selectionModel()
         row: Optional[int] = None
         if selection is not None and selection.hasSelection():
             indexes = selection.selectedRows()
             if indexes:
                 row = indexes[0].row()
         if row is None:
-            row = self._table.currentRow()
+            row = table.currentRow()
 
         if row is None or row < 0 or row >= self._pending_row_count:
             self._pending_drag_uid = None
@@ -151,17 +174,21 @@ class QueueTableCursorController(QObject):
         self._pending_drag_uid = self._lookup_row_uid(row)
 
     def _derive_drop_row(self, event: QDropEvent) -> Optional[int]:
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return None
+
         pos = event.position().toPoint()
-        index = self._table.indexAt(pos)
+        index = table.indexAt(pos)
         if index.isValid():
             return index.row()
 
-        row = self._table.rowAt(pos.y())
+        row = table.rowAt(pos.y())
         if row >= 0:
             return row
 
-        if pos.y() > self._table.viewport().rect().bottom():
-            row_count = self._table.rowCount()
+        if pos.y() > table.viewport().rect().bottom():
+            row_count = table.rowCount()
             return row_count - 1 if row_count else None
         return None
 
@@ -173,10 +200,13 @@ class QueueTableCursorController(QObject):
         return max(0, min(self._pending_drop_row, self._pending_row_count - 1))
 
     def _lookup_row_uid(self, row: int) -> Optional[str]:
-        if row < 0 or row >= self._table.rowCount():
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
             return None
-        for column in range(self._table.columnCount()):
-            item = self._table.item(row, column)
+        if row < 0 or row >= table.rowCount():
+            return None
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
             if item is None:
                 continue
             value = item.data(QUEUE_ITEM_UID_ROLE)
@@ -185,7 +215,10 @@ class QueueTableCursorController(QObject):
         return None
 
     def _current_uid(self) -> Optional[str]:
-        row = self._table.currentRow()
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return None
+        row = table.currentRow()
         if row is None or row < 0:
             return None
         return self._lookup_row_uid(row)
@@ -193,6 +226,15 @@ class QueueTableCursorController(QObject):
     def _reset_pending_state(self) -> None:
         self._pending_drop_row = None
         self._pending_drag_uid = None
+
+    def _handle_table_destroyed(self) -> None:
+        self._table = None
+        self._controller = None
+        self._pending_uids = []
+        self._pending_row_count = 0
+        self._pending_drop_row = None
+        self._pending_drag_uid = None
+        self._drag_enabled = False
 
     @staticmethod
     def _extract_uid(item: Mapping[str, object]) -> Optional[str]:

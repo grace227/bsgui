@@ -68,7 +68,11 @@ class QueueMonitorWidget(QWidget):
         self._queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._queue_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._configure_queue_table()
-        self._queue_controls = QueueTableCursorController(self._queue_table)
+        self._queue_controls = QueueTableCursorController(
+            self._queue_table,
+            controller=None,
+            refresh_callback=self._handle_local_pending_reorder,
+        )
 
         self._active_label = QLabel("Idle")
         self._progress = QProgressBar()
@@ -161,6 +165,33 @@ class QueueMonitorWidget(QWidget):
 
     # ------------------------------------------------------------------
     # Internal utilities
+
+    def _handle_local_pending_reorder(self, uid: str, target_index: int) -> None:
+        if not self._pending_items:
+            return
+
+        def resolve_uid(item: Mapping[str, Any]) -> str:
+            value = self._extract_item_field(item, "item_uid") or self._extract_item_field(item, "uid")
+            return str(value or "")
+
+        source_index: Optional[int] = None
+        for idx, item in enumerate(self._pending_items):
+            if resolve_uid(item) == uid:
+                source_index = idx
+                break
+
+        if source_index is None or target_index < 0:
+            return
+
+        target_index = max(0, min(target_index, len(self._pending_items) - 1))
+        if source_index == target_index:
+            return
+
+        item = self._pending_items.pop(source_index)
+        if source_index < target_index:
+            target_index -= 1
+        self._pending_items.insert(target_index, item)
+        self._refresh_queue_table()
 
     def _refresh_queue_table(self) -> None:
         all_items: list[Mapping[str, Any]] = [*self._pending_items, *self._completed_items]
