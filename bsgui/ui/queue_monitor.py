@@ -22,6 +22,11 @@ from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
 from .queue_controls import QueueTableCursorController
 
+QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
+QUEUE_ITEM_STATE_ROLE = Qt.ItemDataRole.UserRole + 2
+QUEUE_ITEM_STATE_PENDING = "pending"
+QUEUE_ITEM_STATE_COMPLETED = "completed"
+
 from ..core.qserver_controller import QServerController, QueueSnapshot
 
 
@@ -32,7 +37,7 @@ class QueueColumnSpec:
     stretch: bool = False
 
 
-class QServerMonitorWidget(QWidget):
+class QueueMonitorWidget(QWidget):
     """Widget that displays queue state and progress for Bluesky QServer."""
 
     def __init__(
@@ -99,6 +104,8 @@ class QServerMonitorWidget(QWidget):
             except (RuntimeError, AttributeError):
                 pass
         self._controller = controller
+        if self._queue_controls is not None:
+            self._queue_controls.set_controller(controller)
         if controller is None:
             return
         controller.queueUpdated.connect(self._handle_queue_updated)
@@ -162,9 +169,27 @@ class QServerMonitorWidget(QWidget):
         for row, item in enumerate(all_items):
             for column_index, spec in enumerate(self._columns):
                 value = self._format_queue_value(spec.column_id, item, row)
-                self._queue_table.setItem(row, column_index, QTableWidgetItem(value))
+                cell = QTableWidgetItem(value)
+                state = (
+                    QUEUE_ITEM_STATE_PENDING
+                    if row < len(self._pending_items)
+                    else QUEUE_ITEM_STATE_COMPLETED
+                )
+                uid = self._extract_item_field(item, "item_uid") or self._extract_item_field(item, "uid") or ""
+                cell.setData(QUEUE_ITEM_UID_ROLE, str(uid))
+                cell.setData(QUEUE_ITEM_STATE_ROLE, state)
+                flags = cell.flags()
+                if state == QUEUE_ITEM_STATE_PENDING:
+                    flags |= Qt.ItemIsDragEnabled
+                else:
+                    flags &= ~Qt.ItemIsDragEnabled
+                cell.setFlags(flags)
+                self._queue_table.setItem(row, column_index, cell)
 
-    def _configure_queue_table(self) -> None:
+        if self._queue_controls is not None:
+            self._queue_controls.sync_pending_items(self._pending_items)
+
+    def _configure_queue_table(self, minimum_section_size: float = 90) -> None:
         header = self._queue_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.Stretch)
@@ -177,10 +202,12 @@ class QServerMonitorWidget(QWidget):
                 self._queue_table.setHorizontalHeaderItem(index, header_item)
             else:
                 header_item.setText(spec.label)
-        
+                
+        header.setMinimumSectionSize(minimum_section_size)
+        header.setSectionResizeMode(QHeaderView.Interactive)
 
-        if self._queue_controls is not None:
-            self._queue_controls.configure_header_behavior()
+        # if self._queue_controls is not None:
+        #     self._queue_controls.configure_header_behavior()
 
     def _ensure_columns(self, queue: Sequence[Mapping[str, Any]]) -> None:
         required: list[QueueColumnSpec] = []

@@ -13,7 +13,7 @@ from .ui import (
     PlanParameter,
     PlotCanvasWidget,
     PtychographyLoaderWidget,
-    QServerMonitorWidget,
+    QueueMonitorWidget,
     XRFLoaderWidget,
 )
 
@@ -29,7 +29,7 @@ __all__ = [
     "PlanParameter",
     "PlotCanvasWidget",
     "PtychographyLoaderWidget",
-    "QServerWidget",
+    "QueueMonitorWidget",
     "WidgetDescriptor",
     "WidgetRegistry",
     "XRFLoaderWidget",

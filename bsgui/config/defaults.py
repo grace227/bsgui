@@ -18,7 +18,7 @@ from ..ui.data_loader import PtychographyLoaderWidget, XRFLoaderWidget
 from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
 from ..ui.qserver_status import QueueServerStatusWidget
 from ..ui.qserver_console import QServerConsoleWidget
-from ..ui.qserver_monitor import QServerMonitorWidget
+from ..ui.queue_monitor import QueueMonitorWidget
 
 
 def _parse_env_file(path: pathlib.Path) -> Mapping[str, str]:
@@ -404,7 +404,7 @@ def register_default_widgets(
         monitor_kwargs.setdefault("controller", controller)
         if roi_key_map and "roi_key_map" not in monitor_kwargs:
             monitor_kwargs["roi_key_map"] = roi_key_map
-        widget = QServerMonitorWidget(**monitor_kwargs)
+        widget = QueueMonitorWidget(**monitor_kwargs)
         controller.start_polling()
         return widget
 

@@ -1,203 +1,212 @@
-"""Helpers for enhancing queue table interactions."""
+"""Interactive helpers for managing queue-table drag and drop."""
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Mapping, Optional, Sequence
 
-from PySide6.QtCore import QObject, QEvent, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTableWidget
-from shiboken6 import Shiboken
+from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtGui import QDropEvent
+from PySide6.QtWidgets import QAbstractItemView, QTableWidget
+
+from ..core.qserver_controller import QServerController
+from .status_bus import emit_status
+
+QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class QueueTableCursorController(QObject):
-    """Event filter that fine-tunes cursor behaviour for queue tables.
+    """Attach drag-and-drop helpers to the queue table."""
 
-    The controller wraps the default Qt navigation so we can provide a smoother
-    experience when users navigate with the keyboard or mouse. It is intentionally
-    lightweight so it can be attached to any `QTableWidget` instance used in the
-    queue views.
-    """
+    def __init__(
+        self,
+        table: QTableWidget,
+        *,
+        controller: Optional[QServerController] = None,
+        parent: Optional[QObject] = None,
+    ) -> None:
+        super().__init__(parent or table)
+        self._table = table
+        self._controller = controller
 
-    def __init__(self, table: QTableWidget) -> None:
-        super().__init__(table)
-        self._table: Optional[QTableWidget] = table
-        self._header: Optional[QHeaderView] = table.horizontalHeader()
-        self._right_button_active = False
+        self._pending_uids: list[str] = []
+        self._pending_row_count = 0
+        self._pending_drop_row: Optional[int] = None
+        self._pending_drag_uid: Optional[str] = None
+        self._drag_enabled = False
 
-        table.installEventFilter(self)
+        self._configure_table_widget()
         table.viewport().installEventFilter(self)
-        if self._header is not None:
-            self._header.installEventFilter(self)
-        table.setMouseTracking(True)
-        table.destroyed.connect(self._handle_table_destroyed)
-        if self._header is not None:
-            self._header.destroyed.connect(self._handle_header_destroyed)
-        self.configure_header_behavior()
 
-    def detach(self) -> None:
-        """Remove the event filter from the table."""
+    # ------------------------------------------------------------------ #
+    # Public API
 
+    def set_controller(self, controller: Optional[QServerController]) -> None:
+        self._controller = controller
+        self._update_drag_state()
+
+    def sync_pending_items(self, pending_items: Sequence[Mapping[str, object]]) -> None:
+        """Refresh cached pending metadata and update drag state."""
+
+        self._pending_uids = [self._extract_uid(item) or "" for item in pending_items]
+        self._pending_row_count = len(self._pending_uids)
+        self._update_drag_state()
+
+    # ------------------------------------------------------------------ #
+    # Qt hooks
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if obj is self._table.viewport():
+            if event.type() in {QEvent.DragEnter, QEvent.DragMove}:
+                self._capture_pending_drag()
+            elif event.type() == QEvent.Drop:
+                drop_event = event if isinstance(event, QDropEvent) else None
+                self._process_pending_reorder(drop_event)
+        return super().eventFilter(obj, event)
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+
+    def _configure_table_widget(self) -> None:
         table = self._table
-        header = self._header
-        if table is not None and Shiboken.isValid(table):
-            table.removeEventFilter(self)
-            table.viewport().removeEventFilter(self)
-        if header is not None and Shiboken.isValid(header):
-            header.removeEventFilter(self)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setDragDropOverwriteMode(False)
+        table.setDropIndicatorShown(True)
+        table.setDefaultDropAction(Qt.MoveAction)
+        table.viewport().setAcceptDrops(False)
+        table.setDragDropMode(QAbstractItemView.NoDragDrop)
 
-    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
-        table = self._table
-        header = self._header
-        if table is None or not Shiboken.isValid(table):
-            return False
-
-        if event.type() == QEvent.KeyPress and isinstance(event, QKeyEvent):
-            if self._handle_key_press(event):
-                return True
-        viewport = table.viewport()
-        if watched is viewport:
-            if event.type() == QEvent.MouseMove:
-                self._handle_mouse_move(event)
-            elif event.type() == QEvent.Leave:
-                table.unsetCursor()
-        elif header is not None and Shiboken.isValid(header):
-            if watched is header:
-                if event.type() == QEvent.MouseButtonPress and isinstance(event, QMouseEvent):
-                    self._handle_header_press(event)
-                elif event.type() == QEvent.MouseMove and isinstance(event, QMouseEvent):
-                    self._handle_header_move(event)
-                elif event.type() == QEvent.MouseButtonRelease and isinstance(event, QMouseEvent):
-                    self._handle_header_release(event)
-
-        return super().eventFilter(watched, event)
-
-    def configure_header_behavior(self, headersize: float | None = 90) -> None:
-        """Ensure header settings allow manual column resizing."""
-
-        header = self._header
-        print(f"Configuring header behavior with size {headersize}")
-        if header is None or not Shiboken.isValid(header):
+    def _update_drag_state(self) -> None:
+        enabled = (
+            bool(self._controller)
+            and self._pending_row_count > 1
+            and all(uid for uid in self._pending_uids)
+        )
+        if enabled == self._drag_enabled:
             return
 
-        if headersize is None:
-            widths = [header.sectionSize(i) for i in range(header.count())]
-            headersize = max([header.minimumSectionSize(), *(w for w in widths if w > 0)], default=90)
-        header.setSectionsClickable(True)
-        header.setStretchLastSection(True)
-        print(f"Setting minimum section size to {headersize}")
-        header.setMinimumSectionSize(int(headersize))
-        header.setSectionResizeMode(QHeaderView.Interactive)
+        self._drag_enabled = enabled
+        mode = QAbstractItemView.InternalMove if enabled else QAbstractItemView.NoDragDrop
+        self._table.setDragDropMode(mode)
+        self._table.viewport().setAcceptDrops(enabled)
+        self._table.setDefaultDropAction(Qt.MoveAction if enabled else Qt.IgnoreAction)
 
-    def _handle_key_press(self, event: QKeyEvent) -> bool:
-        table = self._table
-        if table is None or not Shiboken.isValid(table):
-            return False
-
-        key = event.key()
-        modifiers = event.modifiers()
-        current = table.currentIndex()
-        row_count = table.rowCount()
-        column_count = table.columnCount()
-
-        if not current.isValid() or row_count == 0 or column_count == 0:
-            return False
-
-        if key == Qt.Key_Tab:
-            self._advance_focus(forward=True)
-            return True
-        if key == Qt.Key_Backtab:
-            self._advance_focus(forward=False)
-            return True
-        if key in {Qt.Key_Return, Qt.Key_Enter} and modifiers == Qt.NoModifier:
-            self._advance_focus(forward=True, wrap_rows=True)
-            return True
-
-        return False
-
-    def _handle_mouse_move(self, event: QMouseEvent) -> None:
-        table = self._table
-        if table is None or not Shiboken.isValid(table):
+    def _process_pending_reorder(self, drop_event: Optional[QDropEvent] = None) -> None:
+        if not self._drag_enabled:
+            self._reset_pending_state()
             return
 
-        index = table.indexAt(event.pos())
+        if drop_event is not None:
+            self._pending_drop_row = self._derive_drop_row(drop_event)
+
+        target_row = self._resolve_drop_row()
+        if target_row is None:
+            emit_status("Drop location must stay within pending queue.")
+            self._reset_pending_state()
+            return
+
+        uid = self._pending_drag_uid or self._current_uid()
+        if not uid:
+            emit_status("Unable to determine which plan was dragged.")
+            self._reset_pending_state()
+            return
+
+        controller = self._controller
+        api = getattr(controller, "_api", None) if controller else None
+        if api is None:
+            emit_status("Queue controller unavailable.")
+            self._reset_pending_state()
+            return
+
+        try:
+            response = api.item_move(uid=uid, pos_dest=target_row)
+        except Exception:  # pragma: no cover - runtime safeguard
+            emit_status("Error sending queue reorder request.")
+            self._reset_pending_state()
+            return
+
+        success = True
+        message = "Queue reorder request completed."
+        if isinstance(response, Mapping):
+            success = bool(response.get("success", False))
+            message = response.get("msg", message) or message
+
+        emit_status(message if success else message or "Queue reorder request failed.")
+        self._reset_pending_state()
+
+    def _capture_pending_drag(self) -> None:
+        selection = self._table.selectionModel()
+        row: Optional[int] = None
+        if selection is not None and selection.hasSelection():
+            indexes = selection.selectedRows()
+            if indexes:
+                row = indexes[0].row()
+        if row is None:
+            row = self._table.currentRow()
+
+        if row is None or row < 0 or row >= self._pending_row_count:
+            self._pending_drag_uid = None
+            return
+
+        self._pending_drag_uid = self._lookup_row_uid(row)
+
+    def _derive_drop_row(self, event: QDropEvent) -> Optional[int]:
+        pos = event.position().toPoint()
+        index = self._table.indexAt(pos)
         if index.isValid():
-            table.setCursor(Qt.PointingHandCursor)
-            if table.selectionBehavior() == QAbstractItemView.SelectRows:
-                table.setCurrentIndex(index)
-        else:
-            table.unsetCursor()
+            return index.row()
 
-    def _advance_focus(self, *, forward: bool, wrap_rows: bool = False) -> None:
-        table = self._table
-        if table is None or not Shiboken.isValid(table):
-            return
+        row = self._table.rowAt(pos.y())
+        if row >= 0:
+            return row
 
-        current = table.currentIndex()
-        row = current.row()
-        column = current.column()
-        row_count = table.rowCount()
-        column_count = table.columnCount()
+        if pos.y() > self._table.viewport().rect().bottom():
+            row_count = self._table.rowCount()
+            return row_count - 1 if row_count else None
+        return None
 
-        next_column = column + (1 if forward else -1)
-        next_row = row
+    def _resolve_drop_row(self) -> Optional[int]:
+        if self._pending_row_count == 0:
+            return None
+        if self._pending_drop_row is None:
+            return None
+        return max(0, min(self._pending_drop_row, self._pending_row_count - 1))
 
-        if next_column >= column_count:
-            next_column = 0
-            next_row = row + 1
-        elif next_column < 0:
-            next_column = column_count - 1
-            next_row = row - 1
+    def _lookup_row_uid(self, row: int) -> Optional[str]:
+        if row < 0 or row >= self._table.rowCount():
+            return None
+        for column in range(self._table.columnCount()):
+            item = self._table.item(row, column)
+            if item is None:
+                continue
+            value = item.data(QUEUE_ITEM_UID_ROLE)
+            if isinstance(value, str) and value:
+                return value
+        return None
 
-        if wrap_rows:
-            if next_row >= row_count:
-                next_row = 0
-            elif next_row < 0:
-                next_row = row_count - 1
-        else:
-            next_row = max(0, min(next_row, row_count - 1))
+    def _current_uid(self) -> Optional[str]:
+        row = self._table.currentRow()
+        if row is None or row < 0:
+            return None
+        return self._lookup_row_uid(row)
 
-        next_index = table.model().index(next_row, next_column)
-        if next_index.isValid():
-            behavior = table.selectionBehavior()
-            if behavior == QAbstractItemView.SelectRows:
-                table.selectRow(next_row)
-            table.setCurrentIndex(next_index)
+    def _reset_pending_state(self) -> None:
+        self._pending_drop_row = None
+        self._pending_drag_uid = None
 
-    def _handle_header_press(self, event: QMouseEvent) -> None:
-        header = self._header
-        if header is None or not Shiboken.isValid(header):
-            return
-
-        self._right_button_active = event.button() == Qt.RightButton
-        if self._right_button_active:
-            header.setSectionResizeMode(QHeaderView.Interactive)
-
-    def _handle_header_move(self, event: QMouseEvent) -> None:
-        header = self._header
-        if header is None or not Shiboken.isValid(header):
-            return
-        if not self._right_button_active:
-            return
-        logical_index = header.logicalIndexAt(event.pos())
-        if logical_index < 0:
-            return
-        current_size = header.sectionSize(logical_index)
-        if current_size > header.minimumSectionSize():
-            header.setMinimumSectionSize(current_size)
-
-    def _handle_header_release(self, event: QMouseEvent) -> None:
-        header = self._header
-        if header is None or not Shiboken.isValid(header):
-            return
-        if event.button() == Qt.RightButton and self._right_button_active:
-            self._right_button_active = False
-            self.configure_header_behavior(header.minimumSectionSize())
-
-    def _handle_table_destroyed(self) -> None:
-        self._table = None
-        self._header = None
-        self._right_button_active = False
-
-    def _handle_header_destroyed(self) -> None:
-        self._header = None
+    @staticmethod
+    def _extract_uid(item: Mapping[str, object]) -> Optional[str]:
+        candidates = (
+            item.get("item_uid"),
+            item.get("uid"),
+        )
+        nested = item.get("item")
+        if isinstance(nested, Mapping):
+            candidates += (
+                nested.get("item_uid"),
+                nested.get("uid"),
+            )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate:
+                return candidate
+        return None
