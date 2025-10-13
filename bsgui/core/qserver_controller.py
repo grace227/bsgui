@@ -269,6 +269,17 @@ class QServerController(QObject):
         plans = self.get_allowed_plans(normalize=True)
         return self._convert_allowed_plans(plans, kind=kind)
 
+    def get_plan_parameters_names(self, *, name: str) -> List[str]:
+        definitions = self.get_allowed_plan_definitions()
+        parms: List[str] = []
+        for definition in definitions:
+            if definition.name == name:
+                parameters = definition.parameters
+                if parameters is not None:
+                    for p in parameters:
+                        parms.append(p.name)
+        return parms
+
     @staticmethod
     def _convert_allowed_plans(plans: Dict[str, dict], *, kind: str = "plan") -> List[PlanDefinition]:
         definitions: List[PlanDefinition] = []

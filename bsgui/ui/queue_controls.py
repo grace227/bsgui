@@ -13,6 +13,7 @@ from ..core.qserver_controller import QServerController
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
+QUEUE_ITEM_COLUMN_ROLE = Qt.ItemDataRole.UserRole + 3
 
 
 class QueueTableCursorController(QObject):
