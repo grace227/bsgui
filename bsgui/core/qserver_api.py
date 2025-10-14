@@ -57,6 +57,16 @@ class QServerAPI(REManagerAPI):
         processed.pop("make_devices", None)
         return processed
 
+    def start_queue(self, queue: Dict[str, Any]) -> None:
+        success = False
+        try:
+            response = self.queue_start()
+            success = response.get("success", False)
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error starting queue: {exc}")
+            return success
+        return success
+
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:
         normalized: Dict[str, Any] = {}

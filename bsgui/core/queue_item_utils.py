@@ -178,6 +178,7 @@ def resolve_queue_value(
     roi_key_map: Mapping[str, list[str]],
     roi_value_aliases: set[str],
     available_params: Optional[set[str]] = None,
+    running = False,
 ) -> tuple[str, Optional[str]]:
     if column_id == "index":
         return str(row_index + 1), None
@@ -205,7 +206,22 @@ def resolve_queue_value(
     if column_id in {"plan", "name"}:
         return str(value or item.get("name") or "Unknown"), column_id
     if column_id in {"state", "status"}:
-        return str(value or item.get("state") or item.get("status") or "Pending"), column_id
+        if item.get("result", None) is not None:
+            if item.get("result").get("exit_status", None) is not None:
+                status = item.get("result").get("exit_status")
+        elif item.get("status", None) is not None:
+            status = item.get("status") 
+        elif running:
+            status = "Running"
+        else:
+            status = "Pending"
+        return status, column_id
+    if column_id == "scan_ids":
+        if item.get("result", None) is not None:
+            if item.get("result").get("scan_ids", None) is not None:
+                scan_ids = item.get("result").get("scan_ids")
+                return format_sequence(scan_ids), column_id
+        return "", column_id
     if column_id in {"uid", "item_uid"}:
         uid = value or item.get("item_uid") or item.get("uid")
         return str(uid or ""), column_id
@@ -326,16 +342,39 @@ def build_update_payload(
     row_values: Mapping[str, str],
     *,
     exclude_keys: Optional[Iterable[str]] = None,
+    plan_definitions: Mapping[str, PlanDefinition],
+    plan_name: str,
 ) -> dict[str, Any]:
     exclude = set(exclude_keys or ())
-    sanitized = {
-        key: value
-        for key, value in row_values.items()
-        if key not in exclude and not (isinstance(value, str) and value.strip() == "")
-    }
+    plan = plan_definitions.get(plan_name or "")
+    param_lookup = {parameter.name: parameter for parameter in plan.parameters} if plan else {}
 
     payload = clone_item(raw_item)
-    payload["kwargs"] = sanitized
+    kwargs = ensure_kwargs_container(payload)
+
+    # Start from existing kwargs so we remove blanked entries.
+    updates = {}
+    removals: set[str] = set()
+    for key, value in row_values.items():
+        if key in exclude:
+            continue
+        if isinstance(value, str) and value.strip() == "":
+            removals.add(key)
+            continue
+        parameter = param_lookup.get(key)
+        if parameter is not None and isinstance(value, str):
+            try:
+                coerced = parameter.coerce(value)
+            except ValueError as exc:
+                raise ValueError(f"{key}: {exc}") from exc
+        else:
+            coerced = value
+        updates[key] = coerced
+
+    for key in removals:
+        kwargs.pop(key, None)
+    kwargs.update(updates)
+
     return payload
 
 
