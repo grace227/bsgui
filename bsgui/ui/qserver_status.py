@@ -99,7 +99,7 @@ class QueueServerStatusWidget(QWidget):
         elif worker_status == "initializing":
             self._start_re_button.setEnabled(False)
             self._stop_re_button.setEnabled(False)
-        elif worker_status == "idle":
+        elif worker_status == "idle" or worker_status == "executing_plan":
             self._start_re_button.setEnabled(False)
             self.clearPlansRequested.emit(worker_status or "")
             self._stop_re_button.setEnabled(True)

@@ -146,13 +146,15 @@ class PlanEditorWidget(QWidget):
         self._set_status("ROI applied to plan parameters")
 
     def handle_plans_update(self, worker_status: str) -> None:
+        print(f"worker_status: {worker_status}")
         if worker_status == "closed" or worker_status == "":
             self._plan_combo.blockSignals(True)
             self._plan_combo.clear()
             self._plan_combo.blockSignals(False)
             self._parameter_table.setRowCount(0)
             self._parameter_rows.clear()
-        elif worker_status == "idle" and self._plan_combo.count() == 0:
+        elif any([worker_status == "idle",
+                  worker_status == "executing_plan"]) and self._plan_combo.count() == 0:
             self.refresh_from_controller()
 
     def refresh_from_controller(self) -> None:
