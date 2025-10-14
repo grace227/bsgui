@@ -146,7 +146,6 @@ class PlanEditorWidget(QWidget):
         self._set_status("ROI applied to plan parameters")
 
     def handle_plans_update(self, worker_status: str) -> None:
-        print(f"worker_status: {worker_status}")
         if worker_status == "closed" or worker_status == "":
             self._plan_combo.blockSignals(True)
             self._plan_combo.clear()
