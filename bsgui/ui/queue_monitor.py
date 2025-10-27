@@ -127,11 +127,12 @@ class QueueMonitorWidget(QWidget):
         table_container = QScrollArea()
         table_container.setWidgetResizable(True)
         table_container.setWidget(self._queue_table)
+        layout.addWidget(table_container)
+
         self._status_label = QLabel("")
         self._status_label.setObjectName("queueStatusLabel")
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
-        layout.addWidget(table_container)
         layout.addWidget(QLabel("Active Plan"))
         layout.addWidget(self._active_label)
         layout.addWidget(self._progress)
@@ -221,31 +222,45 @@ class QueueMonitorWidget(QWidget):
             if api is not None:
                 queue_running = api.isqueue_running()
                 re_closed = api.isRE_closed()
-                if not re_closed and queue_running:
-                    self._start_queue_button.setEnabled(False)
-                    self._stop_queue_button.setEnabled(True)
-                elif not re_closed and not queue_running:
-                    self._start_queue_button.setEnabled(True)
-                    self._stop_queue_button.setEnabled(False)
-                else:
-                    self._start_queue_button.setEnabled(False)
-                    self._stop_queue_button.setEnabled(False)
+                queue_stop_pending = api.queue_stop_pending()
+                if not queue_stop_pending:
+                    if not re_closed and queue_running:
+                        self._start_queue_button.setEnabled(False)
+                        self._stop_queue_button.setEnabled(True)
+                    elif not re_closed and not queue_running:
+                        self._start_queue_button.setEnabled(True)
+                        self._stop_queue_button.setEnabled(False)
+                        self._stop_queue_button.setDown(False)
+                    else:
+                        self._start_queue_button.setEnabled(False)
+                        self._stop_queue_button.setEnabled(False)
+
 
     def _handle_start_queue(self) -> None:
+        button = self._start_queue_button
+
         if self._controller is None:
             self._set_status_message("Queue controller unavailable.")
+            button.setDown(False)
+            self._update_queue_actions()
             return
 
         api = getattr(self._controller, "_api", None)
         if api is None:
             self._set_status_message("Queue API unavailable.")
+            button.setDown(False)
             self._update_queue_actions()
             return
+
+        button.setDown(True)
+        button.setEnabled(False)
 
         try:
             response = api.queue_start()
         except Exception:
             self._set_status_message("Failed to submit queue start request.")
+            button.setDown(False)
+            button.setEnabled(True)
             self._update_queue_actions()
             return
 
@@ -258,13 +273,59 @@ class QueueMonitorWidget(QWidget):
         self._set_status_message(message)
         if success:
             self._has_active_plan = True
+
         self._update_queue_actions()
 
+        if success:
+            button.setDown(True)
+            button.setEnabled(False)
+        else:
+            button.setDown(False)
+            button.setEnabled(True)
+
     def _handle_stop_queue(self) -> None:
+        button = self._stop_queue_button
+
         if self._controller is None:
             self._set_status_message("Queue controller unavailable.")
+            button.setDown(False)
             self._update_queue_actions()
             return
+
+        api = getattr(self._controller, "_api", None)
+        if api is None:
+            self._set_status_message("Queue API unavailable.")
+            button.setDown(False)
+            self._update_queue_actions()
+            return
+
+        button.setDown(True)
+        button.setEnabled(False)
+
+        try:
+            response = api.queue_stop()
+        except Exception:
+            self._set_status_message("Failed to submit queue stop request.")
+            button.setDown(False)
+            button.setEnabled(True)
+            self._update_queue_actions()
+            return
+        
+        message = "Queue stop request sent."
+        success = True
+        if isinstance(response, Mapping):
+            success = bool(response.get("success", False))
+            message = response.get("msg", message) or message
+
+        self._set_status_message(message)
+        self._update_queue_actions()
+
+        if success:
+            button.setDown(True)
+            button.setEnabled(False)
+        else:
+            button.setDown(False)
+            button.setEnabled(True)
 
     def _handle_clear_queue(self) -> None:
         if self._controller is None:

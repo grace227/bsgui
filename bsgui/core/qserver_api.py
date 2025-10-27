@@ -43,6 +43,9 @@ class QServerAPI(REManagerAPI):
     def isRE_closed(self) -> bool:
         return self._rm_status.get("re_state") == "closed"
 
+    def queue_stop_pending(self) -> bool:
+        return self.status().get("queue_stop_pending", False)
+
     def get_queue(self) -> Dict[str, Any]:
         try:
             queue = self.queue_get()
