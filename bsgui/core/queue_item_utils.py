@@ -345,6 +345,7 @@ def build_update_payload(
     plan_definitions: Mapping[str, PlanDefinition],
     plan_name: str,
 ) -> dict[str, Any]:
+
     exclude = set(exclude_keys or ())
     plan = plan_definitions.get(plan_name or "")
     param_lookup = {parameter.name: parameter for parameter in plan.parameters} if plan else {}

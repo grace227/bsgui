@@ -127,6 +127,10 @@ class QueueMonitorWidget(QWidget):
         table_container = QScrollArea()
         table_container.setWidgetResizable(True)
         table_container.setWidget(self._queue_table)
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("queueStatusLabel")
+        self._status_label.setWordWrap(True)
+        layout.addWidget(self._status_label)
         layout.addWidget(table_container)
         layout.addWidget(QLabel("Active Plan"))
         layout.addWidget(self._active_label)
@@ -204,28 +208,6 @@ class QueueMonitorWidget(QWidget):
     ) -> None:
         self._running_item = clone_item(item)
         self._refresh_queue_table()
-        # print(f"update_active: {item}, {progress}")
-        # if not isinstance(item, Mapping):
-        #     self._active_label.setText("Idle")
-        #     self._progress.setRange(0, 100)
-        #     self._progress.setValue(0)
-        #     self._has_active_plan = False
-        #     self._update_queue_actions()
-        #     return
-
-        # plan_name = extract_item_field(item, "name") or "Unknown"
-        # uid = extract_item_field(item, "uid") or extract_item_field(item, "item_uid")
-        # display_uid = f" ({str(uid)[:8]})" if uid else ""
-        # self._active_label.setText(f"{plan_name}{display_uid}")
-        # self._has_active_plan = True
-
-        # if progress is None:
-        #     self._progress.setRange(0, 0)
-        # else:
-        #     value = max(0, min(int(progress), 100))
-        #     self._progress.setRange(0, 100)
-        #     self._progress.setValue(value)
-        # self._update_queue_actions()
 
     def update_completed(self, completed: Sequence[Mapping[str, Any]]) -> None:
         self._completed_list.clear()
@@ -234,33 +216,36 @@ class QueueMonitorWidget(QWidget):
         self._refresh_queue_table()
 
     def _update_queue_actions(self) -> None:
-        can_start = (
-            self._controller is not None
-            and not self._has_active_plan
-            and bool(self._pending_raw_items)
-        )
-        self._start_queue_button.setEnabled(can_start)
+        if self._controller is not None:
+            api = getattr(self._controller, "_api", None)
+            if api is not None:
+                queue_running = api.isqueue_running()
+                re_closed = api.isRE_closed()
+                if not re_closed and queue_running:
+                    self._start_queue_button.setEnabled(False)
+                    self._stop_queue_button.setEnabled(True)
+                elif not re_closed and not queue_running:
+                    self._start_queue_button.setEnabled(True)
+                    self._stop_queue_button.setEnabled(False)
+                else:
+                    self._start_queue_button.setEnabled(False)
+                    self._stop_queue_button.setEnabled(False)
 
     def _handle_start_queue(self) -> None:
         if self._controller is None:
-            emit_status("Queue controller unavailable.")
-            self._update_queue_actions()
-            return
-        if not self._pending_raw_items:
-            emit_status("Queue is empty. Nothing to start.")
-            self._update_queue_actions()
+            self._set_status_message("Queue controller unavailable.")
             return
 
         api = getattr(self._controller, "_api", None)
         if api is None:
-            emit_status("Queue API unavailable.")
+            self._set_status_message("Queue API unavailable.")
             self._update_queue_actions()
             return
 
         try:
             response = api.queue_start()
         except Exception:
-            emit_status("Failed to submit queue start request.")
+            self._set_status_message("Failed to submit queue start request.")
             self._update_queue_actions()
             return
 
@@ -270,20 +255,20 @@ class QueueMonitorWidget(QWidget):
             success = bool(response.get("success", False))
             message = response.get("msg", message) or message
 
-        emit_status(message)
+        self._set_status_message(message)
         if success:
             self._has_active_plan = True
         self._update_queue_actions()
 
     def _handle_stop_queue(self) -> None:
         if self._controller is None:
-            emit_status("Queue controller unavailable.")
+            self._set_status_message("Queue controller unavailable.")
             self._update_queue_actions()
             return
 
     def _handle_clear_queue(self) -> None:
         if self._controller is None:
-            emit_status("Queue controller unavailable.")
+            self._set_status_message("Queue controller unavailable.")
             self._update_queue_actions()
             return
         
@@ -337,9 +322,12 @@ class QueueMonitorWidget(QWidget):
             self._pending_table_refresh = False
             self._rebuild_queue_table()
 
+    def _get_uid(self, item: Mapping[str, Any]) -> str:
+        return extract_item_field(item, "item_uid") or extract_item_field(item, "uid") or ""
+
     def _rebuild_queue_table(self) -> None:
 
-        running_uid = extract_item_field(self._running_item, "item_uid") or extract_item_field(self._running_item, "uid") or ""
+        running_uid = self._get_uid(self._running_item)
         
         if running_uid != "":
             all_items: list[Mapping[str, Any]] = [self._running_item, *self._pending_items, *self._completed_items]
@@ -354,7 +342,7 @@ class QueueMonitorWidget(QWidget):
             self._queue_table.setRowCount(len(all_items))
             for row, item in enumerate(all_items):
                 running = False
-                uid = extract_item_field(item, "item_uid") or extract_item_field(item, "uid") or ""
+                uid = self._get_uid(item)
                 
                 pending_index = row - (1 if running_uid else 0)
 
@@ -423,12 +411,15 @@ class QueueMonitorWidget(QWidget):
 
         row = cell.row()
         column_index = cell.column()
+        running_uid = self._get_uid(self._running_item)
+        if running_uid != "":
+            row -= 1
         if row < 0 or column_index < 0:
             return
         if row >= len(self._pending_raw_items):
             # Editing completed or running row: revert.
             self._restore_cell_from_cache(cell, row, column_index)
-            emit_status("Only queued plans can be edited.")
+            self._set_status_message("Only queued plans can be edited.")
             return
         if column_index >= len(self._columns):
             return
@@ -465,13 +456,13 @@ class QueueMonitorWidget(QWidget):
 
         # # Update cached display version
         self._pending_items[row] = prepare_display_item(raw_item)
+        row_values = self._get_row_values(row + (1 if running_uid != "" else 0))
 
         api = getattr(self._controller, "_api", None)
         if api is None:
             self._revert_pending_edit(row, column_index, cell, "Queue controller unavailable.", previous_raw, previous_display, old_text)
             return
 
-        row_values = self._get_row_values(row)
         try:
             payload = build_update_payload(
                 raw_item,
@@ -482,7 +473,7 @@ class QueueMonitorWidget(QWidget):
             )
         except ValueError as exc:
             self._revert_pending_edit(
-                row,
+                row + (1 if running_uid != "" else 0),
                 column_index,
                 cell,
                 f"Invalid value: {exc}",
@@ -510,13 +501,13 @@ class QueueMonitorWidget(QWidget):
             message = response.get("msg", message) or message
 
         if not success:
-            emit_status(message or "Queue item update rejected.")
+            self._set_status_message(message or "Queue item update rejected.")
             self._pending_raw_items[row] = previous_raw
             self._pending_items[row] = previous_display
             self._restore_cell_from_value(cell, old_text)
             return
 
-        emit_status(message)
+        self._set_status_message(message)
         self._refresh_queue_table()
 
     def _revert_pending_edit(
@@ -529,7 +520,7 @@ class QueueMonitorWidget(QWidget):
         previous_display: Optional[Mapping[str, Any]] = None,
         old_text: Optional[str] = None,
     ) -> None:
-        emit_status(message)
+        self._set_status_message(message)
         if previous_raw is not None and 0 <= row < len(self._pending_raw_items):
             self._pending_raw_items[row] = clone_item(previous_raw)
         if previous_display is not None and 0 <= row < len(self._pending_items):
@@ -678,6 +669,10 @@ class QueueMonitorWidget(QWidget):
                     key = kw_key
             values[key] = item.text() if item is not None else ""
         return values
+
+    def _set_status_message(self, message: Optional[str]) -> None:
+        text = "" if message is None else str(message)
+        self._status_label.setText(text)
 
     @staticmethod
     def _prepare_display_item(item: Mapping[str, Any] | Any, *, completed: bool = False) -> dict[str, Any]:

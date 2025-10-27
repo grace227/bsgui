@@ -37,6 +37,12 @@ class QServerAPI(REManagerAPI):
 
         return self._rm_status
 
+    def isqueue_running(self) -> bool:
+        return (not self._rm_status.get("manager_state") == "idle")
+
+    def isRE_closed(self) -> bool:
+        return self._rm_status.get("re_state") == "closed"
+
     def get_queue(self) -> Dict[str, Any]:
         try:
             queue = self.queue_get()
