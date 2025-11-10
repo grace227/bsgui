@@ -218,6 +218,7 @@ class PlanEditorWidget(QWidget):
 
         extras = self._extra_parameters.get(self._current_kind, [])
         parameters = list(extras) + list(definition.parameters)
+
         self._parameter_table.setRowCount(len(parameters))
         self._parameter_rows.clear()
 
@@ -396,6 +397,10 @@ class PlanEditorWidget(QWidget):
         if definition is None:
             return
 
+        if self._get_plan_time() is None or self._get_plan_time() <= 0:
+            self._set_status("Invalid plan time", error=True)
+            return
+
         queue_item = {
             "item_type": "plan",
             "name": definition.name,
@@ -408,18 +413,13 @@ class PlanEditorWidget(QWidget):
                 value_text = line_edit.text()
                 try:
                     value = parameter.coerce(value_text)
+                    queue_item['kwargs'][name] = value
                 except (ValueError, TypeError):
                     self._set_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})", error=True)
                     return
 
             else:
                 value = default_value
-
-            if "stepsize" in name and value <= 0:
-                self._set_status(f"Invalid value '{value}' for parameter '{name}' (expected positive number)", error=True)
-                return
-
-            queue_item['kwargs'][name] = value
 
         if self._controller is None:
             self._set_status('No controller available to queue plan', error=True)
