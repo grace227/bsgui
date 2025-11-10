@@ -90,7 +90,14 @@ class QServerAPI(REManagerAPI):
                 if not isinstance(p_name, str):
                     continue
                 normalized_param = dict(param)
-                normalized_param["default"] = QServerAPI._coerce_default_value(param.get("default"))
+                # normalized_param["default"] = QServerAPI._coerce_default_value(param.get("default"))
+                annotated_type, has_annotated_default, annotated_default = QServerAPI._coerce_annotate_value(
+                    param.get("annotation")
+                )
+                if annotated_type:
+                    normalized_param["type_name"] = annotated_type
+                if has_annotated_default:
+                    normalized_param["default"] = annotated_default
                 parameters.append(normalized_param)
             norm_spec = dict(spec)
             norm_spec["parameters"] = parameters
@@ -117,6 +124,67 @@ class QServerAPI(REManagerAPI):
                 return stripped
         return value
 
+    @staticmethod
+    def _coerce_annotate_value(annotation: Any) -> tuple[Optional[str], bool, Any]:
+        """
+        Extract a normalized type name and optional default value from the annotation field.
+
+        Returns:
+            tuple[type_name, has_default, default_value]
+        """
+        if annotation is None:
+            return None, False, None
+
+        raw_type: Any
+        has_default = False
+        default_value: Any = None
+
+        if isinstance(annotation, Mapping):
+            raw_type = annotation.get("type")
+            if "default" in annotation:
+                has_default = True
+                default_value = QServerAPI._coerce_default_value(annotation.get("default"))
+        else:
+            raw_type = annotation
+        if raw_type is None:
+            return None, has_default, default_value
+        if isinstance(raw_type, type):
+            return raw_type.__name__, has_default, default_value
+        if isinstance(raw_type, str):
+            stripped = raw_type.strip()
+            if stripped == "":
+                return None, has_default, default_value
+            # Remove surrounding quotes if present
+            if (stripped.startswith("'") and stripped.endswith("'")) or (
+                stripped.startswith('"') and stripped.endswith('"')
+            ):
+                stripped = stripped[1:-1].strip()
+            if stripped.startswith("<class ") and stripped.endswith(">"):
+                stripped = stripped[len("<class ") : -1].strip().strip("'\"")
+            simplified = stripped.replace("typing.", "").replace("builtins.", "").replace("types.", "")
+            if simplified.startswith("Optional[") and simplified.endswith("]"):
+                simplified = simplified[len("Optional[") : -1].strip()
+            elif simplified.startswith("Union[") and simplified.endswith("]"):
+                union_members = [part.strip() for part in simplified[len("Union[") : -1].split(",")]
+                for member in union_members:
+                    if member not in {"None", "NoneType"} and member:
+                        simplified = member
+                        break
+            if "[" not in simplified and "." in simplified:
+                simplified = simplified.split(".")[-1]
+            lowered = simplified.lower()
+            if lowered in {"none", "nonetype"}:
+                return None, has_default, default_value
+            if lowered in {"bool", "boolean"}:
+                return "bool", has_default, default_value
+            if lowered in {"int", "integer"}:
+                return "int", has_default, default_value
+            if lowered in {"float", "double"}:
+                return "float", has_default, default_value
+            if lowered in {"str", "string"}:
+                return "str", has_default, default_value
+            return simplified, has_default, default_value
+        return str(raw_type), has_default, default_value
 
 
     def recv_console_message(self, timeout: float = 1) -> Optional[Dict[str, Any]]:
