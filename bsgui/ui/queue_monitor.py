@@ -114,15 +114,25 @@ class QueueMonitorWidget(QWidget):
         self._stop_queue_button.clicked.connect(self._handle_stop_queue)
         self._stop_queue_button.setEnabled(True)
 
+        self._delete_queue_button = QPushButton("Delete Queue")
+        self._delete_queue_button.clicked.connect(self._handle_delete_queue)
+        self._delete_queue_button.setEnabled(True)
+
         self._clear_queue_button = QPushButton("Clear Queue")
         self._clear_queue_button.clicked.connect(self._handle_clear_queue)
         self._clear_queue_button.setEnabled(True)
+
+        self._clear_history_button = QPushButton("Clear History")
+        self._clear_history_button.clicked.connect(self._handle_clear_history)
+        self._clear_history_button.setEnabled(True)
 
         layout = QVBoxLayout(self)
         header_layout = QHBoxLayout()
         header_layout.addWidget(self._start_queue_button)
         header_layout.addWidget(self._stop_queue_button)
+        header_layout.addWidget(self._delete_queue_button)
         header_layout.addWidget(self._clear_queue_button)
+        header_layout.addWidget(self._clear_history_button)
         layout.addLayout(header_layout)
         table_container = QScrollArea()
         table_container.setWidgetResizable(True)
@@ -332,6 +342,12 @@ class QueueMonitorWidget(QWidget):
             self._set_status_message("Queue controller unavailable.")
             self._update_queue_actions()
             return
+        self._controller._api.clear_queue()
+        self._set_status_message("Queue cleared.")
+        self._update_queue_actions()
+
+    def _handle_delete_queue(self) -> None:
+        pass
         
 
     # ------------------------------------------------------------------

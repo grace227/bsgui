@@ -51,7 +51,6 @@ class QueueTableCursorController(QObject):
 
     def sync_pending_items(self, pending_items: Sequence[Mapping[str, object]]) -> None:
         """Refresh cached pending metadata and update drag state."""
-
         self._pending_uids = [self._extract_uid(item) or "" for item in pending_items]
         self._pending_row_count = len(self._pending_uids)
         self._update_drag_state()

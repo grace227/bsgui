@@ -56,6 +56,13 @@ class QServerAPI(REManagerAPI):
         self._connected = True
         return queue
 
+    def clear_queue(self) -> None:
+        try:
+            self.queue_clear()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error clearing queue: {exc}")
+            return
+
     def get_allowed_plans(self, *, normalize: bool = False) -> Dict[str, Any]:
         try:
             plans = self.plans_allowed()["plans_allowed"]
