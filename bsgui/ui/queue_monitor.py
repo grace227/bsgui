@@ -232,37 +232,30 @@ class QueueMonitorWidget(QWidget):
         self._refresh_queue_table()
 
     def _update_queue_actions(self) -> None:
-        if self._controller is not None:
-            api = getattr(self._controller, "_api", None)
-            if api is not None:
-                queue_running = api.isqueue_running()
-                re_closed = api.isRE_closed()
-                queue_stop_pending = api.queue_stop_pending()
-                if not queue_stop_pending:
-                    if not re_closed and queue_running:
-                        self._start_queue_button.setEnabled(False)
-                        self._stop_queue_button.setEnabled(True)
-                    elif not re_closed and not queue_running:
-                        self._start_queue_button.setEnabled(True)
-                        self._stop_queue_button.setEnabled(False)
-                        self._stop_queue_button.setDown(False)
-                    else:
-                        self._start_queue_button.setEnabled(False)
-                        self._stop_queue_button.setEnabled(False)
+        api = self._require_queue_api(notify=False)
+        if api is None:
+            return
+        queue_running = api.isqueue_running()
+        re_closed = api.isRE_closed()
+        queue_stop_pending = api.queue_stop_pending()
+        if not queue_stop_pending:
+            if not re_closed and queue_running:
+                self._start_queue_button.setEnabled(False)
+                self._stop_queue_button.setEnabled(True)
+            elif not re_closed and not queue_running:
+                self._start_queue_button.setEnabled(True)
+                self._stop_queue_button.setEnabled(False)
+                self._stop_queue_button.setDown(False)
+            else:
+                self._start_queue_button.setEnabled(False)
+                self._stop_queue_button.setEnabled(False)
 
 
     def _handle_start_queue(self) -> None:
         button = self._start_queue_button
 
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            button.setDown(False)
-            self._update_queue_actions()
-            return
-
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             button.setDown(False)
             self._update_queue_actions()
             return
@@ -305,14 +298,8 @@ class QueueMonitorWidget(QWidget):
             self._set_status_message("Queue table unavailable.")
             return
 
-        controller = self._controller
-        if controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            return
-
-        api = getattr(controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             return
 
         queue_controls = self._queue_controls
@@ -321,7 +308,6 @@ class QueueMonitorWidget(QWidget):
             return
 
         pending_uids = queue_controls.selected_row_uids(pending_only=False)
-        print(f"pending_uids: {pending_uids}")
         if not queue_controls.has_selection():
             self._set_status_message("No queue rows selected.")
             return
@@ -343,15 +329,8 @@ class QueueMonitorWidget(QWidget):
     def _handle_stop_queue(self) -> None:
         button = self._stop_queue_button
 
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            button.setDown(False)
-            self._update_queue_actions()
-            return
-
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             button.setDown(False)
             self._update_queue_actions()
             return
@@ -385,13 +364,8 @@ class QueueMonitorWidget(QWidget):
             button.setEnabled(True)
 
     def _handle_clear_queue(self) -> None:
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            return
-            
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             return
         try:
             api.clear_queue()
@@ -402,11 +376,16 @@ class QueueMonitorWidget(QWidget):
         self._update_queue_actions()
 
     def _handle_clear_history(self) -> None:
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
+        api = self._require_queue_api()
+        if api is None:
             self._update_queue_actions()
             return
-        self._controller._api.clear_history()
+        try:
+            api.clear_history()
+        except Exception:
+            self._set_status_message("Failed to clear history.")
+            self._update_queue_actions()
+            return
         self._set_status_message("History cleared.")
         self._update_queue_actions()
 
@@ -416,14 +395,8 @@ class QueueMonitorWidget(QWidget):
             self._set_status_message("Queue table unavailable.")
             return
 
-        controller = self._controller
-        if controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            return
-
-        api = getattr(controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             return
 
         queue_controls = self._queue_controls
@@ -453,6 +426,25 @@ class QueueMonitorWidget(QWidget):
 
     # ------------------------------------------------------------------
     # Internal utilities
+
+    def _require_queue_api(self, *, notify: bool = True) -> Optional[Any]:
+        """
+        Return the queue API instance if available.
+
+        When ``notify`` is True, emit a status message explaining why the API
+        could not be returned (missing controller or API).
+        """
+        controller = self._controller
+        if controller is None:
+            if notify:
+                self._set_status_message("Queue controller unavailable.")
+            return None
+        api = getattr(controller, "_api", None)
+        if api is None:
+            if notify:
+                self._set_status_message("Queue API unavailable.")
+            return None
+        return api
 
     def _handle_local_pending_reorder(self, uid: str, target_index: int) -> None:
         if not self._pending_items:
@@ -607,9 +599,12 @@ class QueueMonitorWidget(QWidget):
             column_id = self._columns[column_index].column_id
 
         plan_name = self._extract_plan_name(self._pending_raw_items[row])
+        print(plan_name)
         source_key = cell.data(QUEUE_ITEM_KWARG_KEY_ROLE)
         target_key = source_key if isinstance(source_key, str) and source_key else column_id
+        print(f"source_key: {source_key}, target_key: {target_key}")
         raw_item = self._pending_raw_items[row]
+        print(f"raw_item: {raw_item}")
         if not isinstance(raw_item, MutableMapping):
             self._revert_pending_edit(row, column_index, cell, "Unable to edit this entry.")
             return
@@ -636,9 +631,17 @@ class QueueMonitorWidget(QWidget):
         self._pending_items[row] = prepare_display_item(raw_item)
         row_values = self._get_row_values(row + (1 if running_uid != "" else 0))
 
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api(notify=False)
         if api is None:
-            self._revert_pending_edit(row, column_index, cell, "Queue controller unavailable.", previous_raw, previous_display, old_text)
+            self._revert_pending_edit(
+                row,
+                column_index,
+                cell,
+                "Queue controller unavailable.",
+                previous_raw,
+                previous_display,
+                old_text,
+            )
             return
 
         try:
