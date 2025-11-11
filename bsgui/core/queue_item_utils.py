@@ -180,6 +180,10 @@ def resolve_queue_value(
     available_params: Optional[set[str]] = None,
     running = False,
 ) -> tuple[str, Optional[str]]:
+
+    # if row_index == 10:
+    #     print(f"resolve_queue_value: {column_id=},\n {item=},\n {row_index=},\n {roi_key_map=},\n {roi_value_aliases=},\n {available_params=},\n {running=}")
+
     if column_id == "index":
         return str(row_index + 1), None
     if column_id in roi_key_map:
@@ -351,6 +355,9 @@ def build_update_payload(
     param_lookup = {parameter.name: parameter for parameter in plan.parameters} if plan else {}
 
     payload = clone_item(raw_item)
+    # print(f"payload: {payload}")
+    # print(f"param_lookup: {param_lookup}")
+    # print(f"exclude: {exclude}")
     kwargs = ensure_kwargs_container(payload)
 
     # Start from existing kwargs so we remove blanked entries.
@@ -376,6 +383,8 @@ def build_update_payload(
         kwargs.pop(key, None)
     kwargs.update(updates)
 
+
+    print(f"payload: {payload}")
     return payload
 
 
