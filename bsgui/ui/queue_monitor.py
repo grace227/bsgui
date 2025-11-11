@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QHBoxLayout
+from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QHeaderView
 
 from .queue_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
 from .status_bus import emit_status
@@ -114,7 +114,11 @@ class QueueMonitorWidget(QWidget):
         self._stop_queue_button.clicked.connect(self._handle_stop_queue)
         self._stop_queue_button.setEnabled(True)
 
-        self._delete_queue_button = QPushButton("Delete Queue")
+        self._duplicate_queue_button = QPushButton("Duplicate Selected")
+        self._duplicate_queue_button.clicked.connect(self._handle_duplicate_queue)
+        self._duplicate_queue_button.setEnabled(True)
+
+        self._delete_queue_button = QPushButton("Delete Selected")
         self._delete_queue_button.clicked.connect(self._handle_delete_queue)
         self._delete_queue_button.setEnabled(True)
 
@@ -127,12 +131,13 @@ class QueueMonitorWidget(QWidget):
         self._clear_history_button.setEnabled(True)
 
         layout = QVBoxLayout(self)
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(self._start_queue_button)
-        header_layout.addWidget(self._stop_queue_button)
-        header_layout.addWidget(self._delete_queue_button)
-        header_layout.addWidget(self._clear_queue_button)
-        header_layout.addWidget(self._clear_history_button)
+        header_layout = QGridLayout()
+        header_layout.addWidget(self._start_queue_button, 0, 0)
+        header_layout.addWidget(self._stop_queue_button, 0, 1)
+        header_layout.addWidget(self._duplicate_queue_button, 0, 2)
+        header_layout.addWidget(self._delete_queue_button, 1, 0)
+        header_layout.addWidget(self._clear_queue_button, 1, 1)
+        header_layout.addWidget(self._clear_history_button, 1, 2)
         layout.addLayout(header_layout)
         table_container = QScrollArea()
         table_container.setWidgetResizable(True)
@@ -293,6 +298,48 @@ class QueueMonitorWidget(QWidget):
             button.setDown(False)
             button.setEnabled(True)
 
+
+    def _handle_duplicate_queue(self) -> None:
+        table = self._queue_table
+        if table is None:
+            self._set_status_message("Queue table unavailable.")
+            return
+
+        controller = self._controller
+        if controller is None:
+            self._set_status_message("Queue controller unavailable.")
+            return
+
+        api = getattr(controller, "_api", None)
+        if api is None:
+            self._set_status_message("Queue API unavailable.")
+            return
+
+        queue_controls = self._queue_controls
+        if queue_controls is None:
+            self._set_status_message("Queue controls unavailable.")
+            return
+
+        pending_uids = queue_controls.selected_row_uids(pending_only=False)
+        print(f"pending_uids: {pending_uids}")
+        if not queue_controls.has_selection():
+            self._set_status_message("No queue rows selected.")
+            return
+
+        try:
+            api.duplicate_queue(pending_uids)
+            table.selectRow(len(pending_uids))
+        except Exception:
+            self._set_status_message("Failed to duplicate selected queue items.")
+            return
+
+        count = len(pending_uids)
+        suffix = "" if count == 1 else "s"
+        self._set_status_message(f"Duplicate request sent for {count} queued plan{suffix}.")
+        self._update_queue_actions()
+
+
+
     def _handle_stop_queue(self) -> None:
         button = self._stop_queue_button
 
@@ -340,14 +387,68 @@ class QueueMonitorWidget(QWidget):
     def _handle_clear_queue(self) -> None:
         if self._controller is None:
             self._set_status_message("Queue controller unavailable.")
-            self._update_queue_actions()
             return
-        self._controller._api.clear_queue()
+            
+        api = getattr(self._controller, "_api", None)
+        if api is None:
+            self._set_status_message("Queue API unavailable.")
+            return
+        try:
+            api.clear_queue()
+        except Exception:
+            self._set_status_message("Failed to clear queue.")
+            return
         self._set_status_message("Queue cleared.")
         self._update_queue_actions()
 
+    def _handle_clear_history(self) -> None:
+        if self._controller is None:
+            self._set_status_message("Queue controller unavailable.")
+            self._update_queue_actions()
+            return
+        self._controller._api.clear_history()
+        self._set_status_message("History cleared.")
+        self._update_queue_actions()
+
     def _handle_delete_queue(self) -> None:
-        pass
+        table = self._queue_table
+        if table is None:
+            self._set_status_message("Queue table unavailable.")
+            return
+
+        controller = self._controller
+        if controller is None:
+            self._set_status_message("Queue controller unavailable.")
+            return
+
+        api = getattr(controller, "_api", None)
+        if api is None:
+            self._set_status_message("Queue API unavailable.")
+            return
+
+        queue_controls = self._queue_controls
+        if queue_controls is None:
+            self._set_status_message("Queue controls unavailable.")
+            return
+
+        pending_uids = queue_controls.selected_row_uids(pending_only=True)
+        if not queue_controls.has_selection():
+            self._set_status_message("No queue rows selected.")
+            return
+        if not pending_uids:
+            self._set_status_message("Only queued plans can be deleted.")
+            return
+
+        try:
+            api.delete_queue(pending_uids)
+        except Exception:
+            self._set_status_message("Failed to delete selected queue items.")
+            return
+
+        count = len(pending_uids)
+        suffix = "" if count == 1 else "s"
+        self._set_status_message(f"Delete request sent for {count} queued plan{suffix}.")
+        self._update_queue_actions()
         
 
     # ------------------------------------------------------------------

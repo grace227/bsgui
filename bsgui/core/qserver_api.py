@@ -63,6 +63,40 @@ class QServerAPI(REManagerAPI):
             print(f"Error clearing queue: {exc}")
             return
 
+    def delete_queue(self, queue_ids: List[str]) -> None:
+        try:
+            self.item_remove_batch(uids = queue_ids)
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error deleting queue: {exc}")
+            return
+
+    def clear_queue(self) -> None:
+        try:
+            self.queue_clear()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error clearing queue: {exc}")
+            return
+
+    def duplicate_queue(self, queue_ids: List[str]) -> None:
+        for uid in queue_ids:
+            item = self.fetch_from_queue_history(uid)
+            if item is not None:
+                try:
+                    self.item_add(item = item, pos="front")
+                except Exception as exc:  # pragma: no cover - network path
+                    print(f"Error duplicating item {uid}: {exc}")
+                    return
+
+    def fetch_from_queue_history(self, queue_id: str) -> Dict[str, Any]:
+        history = self.history_get().get("items", [])
+        queue = self.queue_get().get("items", [])
+        combine = queue + history
+
+        item_uids = [item.get("item_uid", None) for item in combine]
+        if queue_id in item_uids:
+            return combine[item_uids.index(queue_id)]
+        return None
+
     def get_allowed_plans(self, *, normalize: bool = False) -> Dict[str, Any]:
         try:
             plans = self.plans_allowed()["plans_allowed"]

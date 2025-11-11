@@ -13,7 +13,9 @@ from ..core.qserver_controller import QServerController
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
+QUEUE_ITEM_STATE_ROLE = Qt.ItemDataRole.UserRole + 2
 QUEUE_ITEM_COLUMN_ROLE = Qt.ItemDataRole.UserRole + 3
+QUEUE_ITEM_STATE_PENDING = "pending"
 
 
 class QueueTableCursorController(QObject):
@@ -55,6 +57,26 @@ class QueueTableCursorController(QObject):
         self._pending_row_count = len(self._pending_uids)
         self._update_drag_state()
 
+    def has_selection(self) -> bool:
+        """Return True if any queue rows are currently selected."""
+        return bool(self._gather_selected_rows())
+
+    def selected_row_uids(self, pending_only: bool = True) -> list[str]:
+        """Return UIDs for selected rows that correspond to pending items."""
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return []
+        rows = self._gather_selected_rows()
+        pending_uids: list[str] = []
+        for row in sorted(rows):
+            uid, state = self._lookup_row_uid_and_state(row)
+            if pending_only:
+                if uid and state == QUEUE_ITEM_STATE_PENDING:
+                    pending_uids.append(uid)
+            else:
+                pending_uids.append(uid)
+        return pending_uids
+
     # ------------------------------------------------------------------ #
     # Qt hooks
 
@@ -80,7 +102,7 @@ class QueueTableCursorController(QObject):
         if table is None or not Shiboken.isValid(table):
             return
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        table.setSelectionMode(QAbstractItemView.SingleSelection)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         table.setDragDropOverwriteMode(False)
         table.setDropIndicatorShown(True)
         table.setDefaultDropAction(Qt.MoveAction)
@@ -163,7 +185,12 @@ class QueueTableCursorController(QObject):
         if selection is not None and selection.hasSelection():
             indexes = selection.selectedRows()
             if indexes:
-                row = indexes[0].row()
+                # Prefer the most-recently focused row to keep drag/drop predictable
+                focused_row = table.currentRow()
+                if focused_row is not None and focused_row >= 0:
+                    row = focused_row
+                else:
+                    row = indexes[0].row()
         if row is None:
             row = table.currentRow()
 
@@ -200,19 +227,26 @@ class QueueTableCursorController(QObject):
         return max(0, min(self._pending_drop_row, self._pending_row_count - 1))
 
     def _lookup_row_uid(self, row: int) -> Optional[str]:
+        uid, _ = self._lookup_row_uid_and_state(row)
+        return uid
+
+    def _lookup_row_uid_and_state(self, row: int) -> tuple[Optional[str], Optional[str]]:
         table = self._table
         if table is None or not Shiboken.isValid(table):
-            return None
+            return None, None
         if row < 0 or row >= table.rowCount():
-            return None
+            return None, None
         for column in range(table.columnCount()):
             item = table.item(row, column)
             if item is None:
                 continue
-            value = item.data(QUEUE_ITEM_UID_ROLE)
-            if isinstance(value, str) and value:
-                return value
-        return None
+            uid = item.data(QUEUE_ITEM_UID_ROLE)
+            state = item.data(QUEUE_ITEM_STATE_ROLE)
+            uid_str = str(uid) if isinstance(uid, str) and uid else None
+            state_str = str(state) if isinstance(state, str) else None
+            if uid_str:
+                return uid_str, state_str
+        return None, None
 
     def _current_uid(self) -> Optional[str]:
         table = self._table
@@ -252,3 +286,16 @@ class QueueTableCursorController(QObject):
             if isinstance(candidate, str) and candidate:
                 return candidate
         return None
+
+    def _gather_selected_rows(self) -> set[int]:
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return set()
+        selection = table.selectionModel()
+        rows: set[int] = set()
+        if selection is not None and selection.hasSelection():
+            rows.update(index.row() for index in selection.selectedRows())
+        current_row = table.currentRow()
+        if current_row is not None and current_row >= 0:
+            rows.add(current_row)
+        return rows
