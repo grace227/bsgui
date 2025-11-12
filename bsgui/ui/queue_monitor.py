@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QHeaderView
 
-from .queue_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
+from .qtable_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -79,7 +79,7 @@ class QueueMonitorWidget(QWidget):
         self._pending_items: list[dict[str, Any]] = []
         self._completed_items: list[dict[str, Any]] = []
         self._running_item: dict[str, Any] = {}
-        self._queue_controls: Optional[QueueTableCursorController] = None
+        self._qtable_controls: Optional[QueueTableCursorController] = None
         self._suppress_item_changed = False
         self._pending_table_refresh = False
         self._has_active_plan = False
@@ -91,7 +91,7 @@ class QueueMonitorWidget(QWidget):
         self._queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._queue_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._configure_queue_table()
-        self._queue_controls = QueueTableCursorController(
+        self._qtable_controls = QueueTableCursorController(
             self._queue_table,
             controller=None,
             refresh_callback=self._handle_local_pending_reorder,
@@ -154,8 +154,6 @@ class QueueMonitorWidget(QWidget):
         layout.addWidget(QLabel("Recently Completed"))
         layout.addWidget(self._completed_list)
 
-        self._update_queue_actions()
-
         if controller is not None:
             self.set_controller(controller)
 
@@ -165,6 +163,8 @@ class QueueMonitorWidget(QWidget):
     def set_controller(self, controller: Optional[QServerController]) -> None:
         if controller is self._controller:
             return
+        if controller is None:
+            return
         if self._controller is not None:
             try:
                 self._controller.queueUpdated.disconnect(self._handle_queue_updated)
@@ -173,11 +173,8 @@ class QueueMonitorWidget(QWidget):
         self._controller = controller
         self._plan_param_cache.clear()
         self._load_plan_definitions()
-        if self._queue_controls is not None:
-            self._queue_controls.set_controller(controller)
-        self._update_queue_actions()
-        if controller is None:
-            return
+        if self._qtable_controls is not None:
+            self._qtable_controls.set_controller(controller)
         controller.queueUpdated.connect(self._handle_queue_updated)
         snapshot = controller.fetch_snapshot()
         if snapshot:
@@ -302,13 +299,13 @@ class QueueMonitorWidget(QWidget):
         if api is None:
             return
 
-        queue_controls = self._queue_controls
-        if queue_controls is None:
+        qtable_controls = self._qtable_controls
+        if qtable_controls is None:
             self._set_status_message("Queue controls unavailable.")
             return
 
-        pending_uids = queue_controls.selected_row_uids(pending_only=False)
-        if not queue_controls.has_selection():
+        pending_uids = qtable_controls.selected_row_uids(pending_only=False)
+        if not qtable_controls.has_selection():
             self._set_status_message("No queue rows selected.")
             return
 
@@ -399,13 +396,13 @@ class QueueMonitorWidget(QWidget):
         if api is None:
             return
 
-        queue_controls = self._queue_controls
-        if queue_controls is None:
+        qtable_controls = self._qtable_controls
+        if qtable_controls is None:
             self._set_status_message("Queue controls unavailable.")
             return
 
-        pending_uids = queue_controls.selected_row_uids(pending_only=True)
-        if not queue_controls.has_selection():
+        pending_uids = qtable_controls.selected_row_uids(pending_only=True)
+        if not qtable_controls.has_selection():
             self._set_status_message("No queue rows selected.")
             return
         if not pending_uids:
@@ -569,8 +566,8 @@ class QueueMonitorWidget(QWidget):
             self._queue_table.blockSignals(False)
             self._suppress_item_changed = False
 
-        if self._queue_controls is not None:
-            self._queue_controls.sync_pending_items(self._pending_raw_items)
+        if self._qtable_controls is not None:
+            self._qtable_controls.sync_pending_items(self._pending_raw_items)
 
     def _handle_item_changed(self, cell: QTableWidgetItem) -> None:
         

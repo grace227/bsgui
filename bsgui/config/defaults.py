@@ -161,7 +161,7 @@ def register_default_widgets(
     if include_xrf:
         def make_xrf_loader() -> tuple:
             search_paths = _coerce_paths(xrf_cfg.get("search_paths"), fallback_paths)
-            controller = DataVisualizationController(
+            data_controller = DataVisualizationController(
                 loader=_resolve_loader_callable(xrf_cfg, default_loader),
                 search_paths=search_paths,
                 file_patterns=tuple(xrf_cfg.get("file_patterns", ["*.dat", "*.h5"])),
@@ -170,7 +170,14 @@ def register_default_widgets(
                 file_patterns=xrf_cfg.get("file_patterns"),
                 initial_folder=search_paths[0] if search_paths else None,
             )
-            return loader_widget, controller
+            try:
+                qserver_controller = ensure_controller()
+            except Exception:
+                qserver_controller = None
+            else:
+                loader_widget.set_qserver_controller(qserver_controller)
+                qserver_controller.statusUpdated.connect(loader_widget.handle_status_update)
+            return loader_widget, data_controller
 
         loader_factories.append(make_xrf_loader)
 
@@ -220,6 +227,10 @@ def register_default_widgets(
     else:
         qserver_poll_interval = default_poll_interval
 
+    plan_editor_cfg_raw = viewer_cfg.get("plan_editor")
+    plan_editor_cfg = plan_editor_cfg_raw if isinstance(plan_editor_cfg_raw, dict) else None
+    allowed_plans_cfg = plan_editor_cfg.get("allowed_plans") if plan_editor_cfg else None
+
     indicator_config: Optional[Mapping[str, Mapping[str, str]]] = None
     indicator_keys: Optional[Sequence[str]] = None
     status_keys_override: Optional[Sequence[str]] = None
@@ -257,13 +268,13 @@ def register_default_widgets(
                 api=api,
                 poll_interval_ms=qserver_poll_interval,
                 status_keys=status_keys_override,
+                allowed_plans=allowed_plans_cfg,
             )
         return _qserver_controller
 
     roi_key_map: Optional[Mapping[str, Sequence[str]]] = None
 
-    plan_editor_cfg = viewer_cfg.get("plan_editor")
-    if isinstance(plan_editor_cfg, dict) and plan_editor_cfg.get("enabled", True):
+    if plan_editor_cfg and plan_editor_cfg.get("enabled", True):
         plans_cfg = plan_editor_cfg.get("plans", [])
         kinds_cfg = plan_editor_cfg.get("kinds")
         kinds = list(kinds_cfg) if isinstance(kinds_cfg, Sequence) else None
@@ -348,7 +359,9 @@ def register_default_widgets(
                 search_paths=fallback_paths,
                 file_patterns=("*.dat", "*.h5"),
             )
-            loader_widget = XRFLoaderWidget(initial_folder=fallback_paths[0] if fallback_paths else None)
+            loader_widget = XRFLoaderWidget(
+                initial_folder=fallback_paths[0] if fallback_paths else None,
+            )
             return loader_widget, controller
 
         loader_factories.append(make_fallback_loader)

@@ -3,19 +3,14 @@
 from __future__ import annotations
 
 import pathlib
-from typing import List, Optional, Sequence
+from typing import List, Mapping, Optional, Sequence, TYPE_CHECKING
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QComboBox,
-    QGridLayout,
-    QLabel,
-    QPushButton,
-    QFileDialog,
-    QWidget,
-)
+from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QPushButton, QFileDialog, QWidget
 
 from ..core.data_controller import DataVisualizationController
+if TYPE_CHECKING:
+    from ..core.qserver_controller import QServerController
 
 
 class BaseLoaderWidget(QWidget):
@@ -54,6 +49,8 @@ class XRFLoaderWidget(BaseLoaderWidget):
         self._current_folder: Optional[pathlib.Path] = None
         self._file_patterns = list(file_patterns) if file_patterns is not None else []
         self._initial_folder = initial_folder
+        self._qserver_controller: Optional["QServerController"] = None
+        self._worker_status: Optional[str] = None
 
         self._folder_button = QPushButton("XRF Folder")
         self._folder_button.clicked.connect(self._choose_folder)
@@ -78,29 +75,31 @@ class XRFLoaderWidget(BaseLoaderWidget):
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
 
-    # def initialize(self) -> None:
-    #     controller = self._ensure_controller()
-    #     if not self._file_patterns:
-    #         self._file_patterns = list(controller.file_patterns)
-    #     last_path = controller.last_path
-    #     if last_path and last_path.exists():
-    #         self._set_folder(last_path.parent)
-    #         self._select_file(last_path)
-    #         return
-    #     if self._initial_folder and self._initial_folder.exists():
-    #         self._set_folder(self._initial_folder)
-    #         return
-    #     paths = controller.normalized_paths
-    #     if paths:
-    #         self._set_folder(paths[0])
-    #         return
-    #     self._update_element_options(None)
-    #     self._refresh_files()
+    def set_qserver_controller(self, controller: Optional["QServerController"]) -> None:
+        self._qserver_controller = controller
+
+    def handle_status_update(self, status: Mapping[str, object]) -> None:
+        worker_status = status.get("worker_environment_state") if isinstance(status, Mapping) else None
+        if isinstance(worker_status, str):
+            self._worker_status = worker_status
+        elif worker_status is None:
+            self._worker_status = None
 
     def _choose_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select XRF Folder")
+        initial_dir = self._resolve_dialog_directory()
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select XRF Folder",
+            str(initial_dir) if initial_dir is not None else "",
+        )
         if folder:
             self._set_folder(pathlib.Path(folder))
+
+    def _resolve_dialog_directory(self) -> Optional[pathlib.Path]:
+        controller = self._qserver_controller
+        if controller is not None:
+            path = controller.get_save_data_path()
+            return pathlib.Path(path) if path else None
 
     def _set_folder(self, folder: pathlib.Path) -> None:
         self._current_folder = folder

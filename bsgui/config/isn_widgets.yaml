@@ -49,6 +49,8 @@ tabs:
         plans:
           - kind: single
           - kind: batch
+        allowed_plans:
+          - fly2d
         kind_parameters:
           batch:
             - name: iterate_variable

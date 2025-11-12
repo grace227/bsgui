@@ -4,7 +4,9 @@ import ast
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from bluesky_queueserver_api.zmq import REManagerAPI
+from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
+import time
 
 
 class QServerAPI(REManagerAPI):
@@ -15,7 +17,7 @@ class QServerAPI(REManagerAPI):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._rm_status = {}
+        self._save_data_path = None
         self._console_output = ReceiveConsoleOutput(zmq_subscribe_addr=kwargs.get("zmq_info_addr", None))
 
     def get_status(self, selected_keys: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -116,6 +118,29 @@ class QServerAPI(REManagerAPI):
             print(f"Error starting queue: {exc}")
             return success
         return success
+
+    def get_save_data_path(self, *, timeout: float = 5.0) -> Optional[str]:
+        # The string "get_save_data_path" is the name of the function being imported from RE startup.py
+        func = BFunc("get_save_data_path")
+        try:
+            reply = self.function_execute(func, user_group="root")
+            if not reply.get("success"):
+                print(f"QueueServer rejected get_save_data_path(): {reply.get('msg')}")
+                return None
+
+            task_uid = reply.get("task_uid")
+            if not task_uid:
+                print(f"No task UID returned for get_save_data_path(): {reply}")
+                return None
+
+            self.wait_for_completed_task(task_uid, timeout=timeout)
+            result = self.task_result(task_uid=task_uid).get("result") or {}
+            return result.get("return_value")
+        except (self.WaitTimeoutError, self.WaitCancelError) as exc:
+            print(f"Timed out waiting for get_save_data_path(): {exc}")
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error running get_save_data_path(): {exc}")
+        return None
 
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:
@@ -248,4 +273,8 @@ class QServerAPI(REManagerAPI):
             return None
         if isinstance(message, dict):
             return message
+        print(f"message: {message}")
         return {"text": message}
+
+
+

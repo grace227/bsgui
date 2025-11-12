@@ -95,6 +95,7 @@ class QServerController(QObject):
         *,
         poll_interval_ms: int = 2000,
         status_keys: Optional[Sequence[str]] = None,
+        allowed_plans: Optional[object] = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -105,6 +106,9 @@ class QServerController(QObject):
         self._status_keys: Optional[Tuple[str, ...]] = tuple(status_keys) if status_keys else None
         self._console_thread: Optional[threading.Thread] = None
         self._console_stop = threading.Event()
+        self._allowed_plan_filter: Optional[Tuple[str, ...]] = self._normalize_allowed_plan_filter(
+            allowed_plans
+        )
 
     # ----------------------------------------------------------------------------
     # Control
@@ -265,8 +269,27 @@ class QServerController(QObject):
         except Exception:
             return {}
 
+    def get_save_data_path(self) -> Optional[str]:
+        try:
+            return self._api.get_save_data_path()
+        except Exception:
+            _logger.exception("Error fetching save data path")
+            return None
+
     def get_allowed_plan_definitions(self, *, kind: str = "plan") -> List[PlanDefinition]:
         plans = self.get_allowed_plans(normalize=True)
+        if self._allowed_plan_filter:
+            filter_set = set(self._allowed_plan_filter)
+            filtered: Dict[str, dict] = {}
+            for name, spec in plans.items():
+                if name in filter_set:
+                    filtered[name] = spec
+                    continue
+                if isinstance(spec, Mapping):
+                    spec_name = spec.get("name")
+                    if isinstance(spec_name, str) and spec_name in filter_set:
+                        filtered[name] = spec
+            plans = filtered
         return self._convert_allowed_plans(plans, kind=kind)
 
     def get_plan_parameters_names(self, *, name: str) -> List[str]:
@@ -324,3 +347,31 @@ class QServerController(QObject):
                 )
             )
         return definitions
+
+    @staticmethod
+    def _normalize_allowed_plan_filter(allowed_plans: Optional[object]) -> Optional[Tuple[str, ...]]:
+        if allowed_plans is None:
+            return None
+        names: List[str] = []
+        if isinstance(allowed_plans, Mapping):
+            for key in allowed_plans.keys():
+                if isinstance(key, str):
+                    stripped = key.strip()
+                    if stripped:
+                        names.append(stripped)
+        elif isinstance(allowed_plans, Sequence) and not isinstance(allowed_plans, (str, bytes)):
+            for entry in allowed_plans:
+                if isinstance(entry, str):
+                    stripped = entry.strip()
+                    if stripped:
+                        names.append(stripped)
+        elif isinstance(allowed_plans, str):
+            stripped = allowed_plans.strip()
+            if stripped:
+                names.append(stripped)
+        else:
+            return None
+        if not names:
+            return None
+        ordered_unique = list(dict.fromkeys(names))
+        return tuple(ordered_unique)
