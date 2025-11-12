@@ -13,6 +13,14 @@ if TYPE_CHECKING:
     from ..core.qserver_controller import QServerController
 
 
+class RefreshingComboBox(QComboBox):
+    aboutToShowPopup = Signal()
+
+    def showPopup(self) -> None:  # pragma: no cover - UI hook
+        self.aboutToShowPopup.emit()
+        super().showPopup()
+
+
 class BaseLoaderWidget(QWidget):
     """Base class for loader widgets that emit selections for plotting."""
 
@@ -58,8 +66,9 @@ class XRFLoaderWidget(BaseLoaderWidget):
         self._folder_label = QLabel("–")
 
         self._file_label = QLabel("XRF Files:")
-        self._file_combo = QComboBox()
+        self._file_combo = RefreshingComboBox()
         self._file_combo.currentIndexChanged.connect(self._update_element_options)
+        self._file_combo.aboutToShowPopup.connect(self._refresh_files_dropdown)
 
         self._element_label = QLabel("Elements:")
         self._element_combo = QComboBox()
@@ -121,6 +130,39 @@ class XRFLoaderWidget(BaseLoaderWidget):
             self._file_combo.setCurrentIndex(0)
             self._update_element_options(self._current_folder)
 
+    def _refresh_files_dropdown(self) -> None:
+        folder = self._current_folder
+        latest_files: List[pathlib.Path] = []
+        if folder and folder.exists():
+            latest_files = self._collect_files(folder)
+
+        combo_count = self._file_combo.count()
+        if combo_count == len(latest_files):
+            matches = True
+            for i in range(combo_count):
+                item_path = self._file_combo.itemData(i)
+                if not isinstance(item_path, pathlib.Path) or item_path != latest_files[i]:
+                    matches = False
+                    break
+            if matches:
+                return
+
+        previous_selection = self._file_combo.itemData(self._file_combo.currentIndex())
+        self._file_combo.blockSignals(True)
+        self._file_combo.clear()
+        for path in latest_files:
+            self._file_combo.addItem(path.name, path)
+
+        new_index = -1
+        if isinstance(previous_selection, pathlib.Path) and previous_selection in latest_files:
+            new_index = latest_files.index(previous_selection)
+        elif latest_files:
+            new_index = 0
+
+        if new_index >= 0:
+            self._file_combo.setCurrentIndex(new_index)
+        self._file_combo.blockSignals(False)
+
     def _collect_files(self, folder: pathlib.Path) -> List[pathlib.Path]:
         files: List[pathlib.Path] = []
         for pattern in self._file_patterns:
@@ -128,9 +170,10 @@ class XRFLoaderWidget(BaseLoaderWidget):
         return files
 
     def _update_element_options(self, folder: Optional[pathlib.Path]) -> None:
-        if isinstance(folder, int):
-            folder = self._current_folder
-
+        self._refresh_files_dropdown()
+        # if isinstance(folder, int):
+        #     folder = self._current_folder
+        
         index = self._file_combo.currentIndex()
         if index < 0:
             self._element_combo.clear()
