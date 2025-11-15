@@ -21,8 +21,7 @@ tabs:
       loaders:
         xrf:
           enabled: true
-          # loader_path: "mic_vis.common.load_xrf:load_h5_file"
-          loader_path: "mictools.data_proc:load_processed_xspress3"
+          loader_path: "mic_vis.common.load_xrf:load_h5_file"
           search_paths:
             - ./data/img.dat
           file_patterns:

@@ -15,7 +15,7 @@ class PlotCanvasWidget(QWidget):
 
     def __init__(self, *, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._figure = Figure(figsize=(5, 4))
+        self._figure = Figure(figsize=(5, 5))
         self._canvas = FigureCanvasQTAgg(self._figure)
         self._axes = self._figure.add_subplot(111)
         self._colorbar = None

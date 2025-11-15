@@ -4,7 +4,9 @@ import ast
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from bluesky_queueserver_api.zmq import REManagerAPI
+from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
+import time
 
 
 class QServerAPI(REManagerAPI):
@@ -15,7 +17,7 @@ class QServerAPI(REManagerAPI):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._rm_status = {}
+        self._save_data_path = None
         self._console_output = ReceiveConsoleOutput(zmq_subscribe_addr=kwargs.get("zmq_info_addr", None))
 
     def get_status(self, selected_keys: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -56,6 +58,47 @@ class QServerAPI(REManagerAPI):
         self._connected = True
         return queue
 
+    def clear_queue(self) -> None:
+        try:
+            self.queue_clear()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error clearing queue: {exc}")
+            return
+
+    def delete_queue(self, queue_ids: List[str]) -> None:
+        try:
+            self.item_remove_batch(uids = queue_ids)
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error deleting queue: {exc}")
+            return
+
+    def clear_queue(self) -> None:
+        try:
+            self.queue_clear()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error clearing queue: {exc}")
+            return
+
+    def duplicate_queue(self, queue_ids: List[str]) -> None:
+        for uid in queue_ids:
+            item = self.fetch_from_queue_history(uid)
+            if item is not None:
+                try:
+                    self.item_add(item = item, pos="front")
+                except Exception as exc:  # pragma: no cover - network path
+                    print(f"Error duplicating item {uid}: {exc}")
+                    return
+
+    def fetch_from_queue_history(self, queue_id: str) -> Dict[str, Any]:
+        history = self.history_get().get("items", [])
+        queue = self.queue_get().get("items", [])
+        combine = queue + history
+
+        item_uids = [item.get("item_uid", None) for item in combine]
+        if queue_id in item_uids:
+            return combine[item_uids.index(queue_id)]
+        return None
+
     def get_allowed_plans(self, *, normalize: bool = False) -> Dict[str, Any]:
         try:
             plans = self.plans_allowed()["plans_allowed"]
@@ -75,6 +118,29 @@ class QServerAPI(REManagerAPI):
             print(f"Error starting queue: {exc}")
             return success
         return success
+
+    def get_save_data_path(self, *, timeout: float = 5.0) -> Optional[str]:
+        # The string "get_save_data_path" is the name of the function being imported from RE startup.py
+        func = BFunc("get_save_data_path")
+        try:
+            reply = self.function_execute(func, user_group="root")
+            if not reply.get("success"):
+                print(f"QueueServer rejected get_save_data_path(): {reply.get('msg')}")
+                return None
+
+            task_uid = reply.get("task_uid")
+            if not task_uid:
+                print(f"No task UID returned for get_save_data_path(): {reply}")
+                return None
+
+            self.wait_for_completed_task(task_uid, timeout=timeout)
+            result = self.task_result(task_uid=task_uid).get("result") or {}
+            return result.get("return_value")
+        except (self.WaitTimeoutError, self.WaitCancelError) as exc:
+            print(f"Timed out waiting for get_save_data_path(): {exc}")
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error running get_save_data_path(): {exc}")
+        return None
 
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:
@@ -207,4 +273,8 @@ class QServerAPI(REManagerAPI):
             return None
         if isinstance(message, dict):
             return message
+        print(f"message: {message}")
         return {"text": message}
+
+
+

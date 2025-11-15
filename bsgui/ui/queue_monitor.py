@@ -22,9 +22,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QHBoxLayout
+from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QHeaderView
 
-from .queue_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
+from .qtable_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -79,7 +79,7 @@ class QueueMonitorWidget(QWidget):
         self._pending_items: list[dict[str, Any]] = []
         self._completed_items: list[dict[str, Any]] = []
         self._running_item: dict[str, Any] = {}
-        self._queue_controls: Optional[QueueTableCursorController] = None
+        self._qtable_controls: Optional[QueueTableCursorController] = None
         self._suppress_item_changed = False
         self._pending_table_refresh = False
         self._has_active_plan = False
@@ -91,7 +91,7 @@ class QueueMonitorWidget(QWidget):
         self._queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._queue_table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._configure_queue_table()
-        self._queue_controls = QueueTableCursorController(
+        self._qtable_controls = QueueTableCursorController(
             self._queue_table,
             controller=None,
             refresh_callback=self._handle_local_pending_reorder,
@@ -114,15 +114,30 @@ class QueueMonitorWidget(QWidget):
         self._stop_queue_button.clicked.connect(self._handle_stop_queue)
         self._stop_queue_button.setEnabled(True)
 
+        self._duplicate_queue_button = QPushButton("Duplicate Selected")
+        self._duplicate_queue_button.clicked.connect(self._handle_duplicate_queue)
+        self._duplicate_queue_button.setEnabled(True)
+
+        self._delete_queue_button = QPushButton("Delete Selected")
+        self._delete_queue_button.clicked.connect(self._handle_delete_queue)
+        self._delete_queue_button.setEnabled(True)
+
         self._clear_queue_button = QPushButton("Clear Queue")
         self._clear_queue_button.clicked.connect(self._handle_clear_queue)
         self._clear_queue_button.setEnabled(True)
 
+        self._clear_history_button = QPushButton("Clear History")
+        self._clear_history_button.clicked.connect(self._handle_clear_history)
+        self._clear_history_button.setEnabled(True)
+
         layout = QVBoxLayout(self)
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(self._start_queue_button)
-        header_layout.addWidget(self._stop_queue_button)
-        header_layout.addWidget(self._clear_queue_button)
+        header_layout = QGridLayout()
+        header_layout.addWidget(self._start_queue_button, 0, 0)
+        header_layout.addWidget(self._stop_queue_button, 0, 1)
+        header_layout.addWidget(self._duplicate_queue_button, 0, 2)
+        header_layout.addWidget(self._delete_queue_button, 1, 0)
+        header_layout.addWidget(self._clear_queue_button, 1, 1)
+        header_layout.addWidget(self._clear_history_button, 1, 2)
         layout.addLayout(header_layout)
         table_container = QScrollArea()
         table_container.setWidgetResizable(True)
@@ -139,8 +154,6 @@ class QueueMonitorWidget(QWidget):
         layout.addWidget(QLabel("Recently Completed"))
         layout.addWidget(self._completed_list)
 
-        self._update_queue_actions()
-
         if controller is not None:
             self.set_controller(controller)
 
@@ -150,6 +163,8 @@ class QueueMonitorWidget(QWidget):
     def set_controller(self, controller: Optional[QServerController]) -> None:
         if controller is self._controller:
             return
+        if controller is None:
+            return
         if self._controller is not None:
             try:
                 self._controller.queueUpdated.disconnect(self._handle_queue_updated)
@@ -158,11 +173,8 @@ class QueueMonitorWidget(QWidget):
         self._controller = controller
         self._plan_param_cache.clear()
         self._load_plan_definitions()
-        if self._queue_controls is not None:
-            self._queue_controls.set_controller(controller)
-        self._update_queue_actions()
-        if controller is None:
-            return
+        if self._qtable_controls is not None:
+            self._qtable_controls.set_controller(controller)
         controller.queueUpdated.connect(self._handle_queue_updated)
         snapshot = controller.fetch_snapshot()
         if snapshot:
@@ -217,37 +229,30 @@ class QueueMonitorWidget(QWidget):
         self._refresh_queue_table()
 
     def _update_queue_actions(self) -> None:
-        if self._controller is not None:
-            api = getattr(self._controller, "_api", None)
-            if api is not None:
-                queue_running = api.isqueue_running()
-                re_closed = api.isRE_closed()
-                queue_stop_pending = api.queue_stop_pending()
-                if not queue_stop_pending:
-                    if not re_closed and queue_running:
-                        self._start_queue_button.setEnabled(False)
-                        self._stop_queue_button.setEnabled(True)
-                    elif not re_closed and not queue_running:
-                        self._start_queue_button.setEnabled(True)
-                        self._stop_queue_button.setEnabled(False)
-                        self._stop_queue_button.setDown(False)
-                    else:
-                        self._start_queue_button.setEnabled(False)
-                        self._stop_queue_button.setEnabled(False)
+        api = self._require_queue_api(notify=False)
+        if api is None:
+            return
+        queue_running = api.isqueue_running()
+        re_closed = api.isRE_closed()
+        queue_stop_pending = api.queue_stop_pending()
+        if not queue_stop_pending:
+            if not re_closed and queue_running:
+                self._start_queue_button.setEnabled(False)
+                self._stop_queue_button.setEnabled(True)
+            elif not re_closed and not queue_running:
+                self._start_queue_button.setEnabled(True)
+                self._stop_queue_button.setEnabled(False)
+                self._stop_queue_button.setDown(False)
+            else:
+                self._start_queue_button.setEnabled(False)
+                self._stop_queue_button.setEnabled(False)
 
 
     def _handle_start_queue(self) -> None:
         button = self._start_queue_button
 
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            button.setDown(False)
-            self._update_queue_actions()
-            return
-
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             button.setDown(False)
             self._update_queue_actions()
             return
@@ -283,18 +288,46 @@ class QueueMonitorWidget(QWidget):
             button.setDown(False)
             button.setEnabled(True)
 
+
+    def _handle_duplicate_queue(self) -> None:
+        table = self._queue_table
+        if table is None:
+            self._set_status_message("Queue table unavailable.")
+            return
+
+        api = self._require_queue_api()
+        if api is None:
+            return
+
+        qtable_controls = self._qtable_controls
+        if qtable_controls is None:
+            self._set_status_message("Queue controls unavailable.")
+            return
+
+        pending_uids = qtable_controls.selected_row_uids(pending_only=False)
+        if not qtable_controls.has_selection():
+            self._set_status_message("No queue rows selected.")
+            return
+
+        try:
+            api.duplicate_queue(pending_uids)
+            table.selectRow(len(pending_uids))
+        except Exception:
+            self._set_status_message("Failed to duplicate selected queue items.")
+            return
+
+        count = len(pending_uids)
+        suffix = "" if count == 1 else "s"
+        self._set_status_message(f"Duplicate request sent for {count} queued plan{suffix}.")
+        self._update_queue_actions()
+
+
+
     def _handle_stop_queue(self) -> None:
         button = self._stop_queue_button
 
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
-            button.setDown(False)
-            self._update_queue_actions()
-            return
-
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api()
         if api is None:
-            self._set_status_message("Queue API unavailable.")
             button.setDown(False)
             self._update_queue_actions()
             return
@@ -328,14 +361,87 @@ class QueueMonitorWidget(QWidget):
             button.setEnabled(True)
 
     def _handle_clear_queue(self) -> None:
-        if self._controller is None:
-            self._set_status_message("Queue controller unavailable.")
+        api = self._require_queue_api()
+        if api is None:
+            return
+        try:
+            api.clear_queue()
+        except Exception:
+            self._set_status_message("Failed to clear queue.")
+            return
+        self._set_status_message("Queue cleared.")
+        self._update_queue_actions()
+
+    def _handle_clear_history(self) -> None:
+        api = self._require_queue_api()
+        if api is None:
             self._update_queue_actions()
             return
+        try:
+            api.clear_history()
+        except Exception:
+            self._set_status_message("Failed to clear history.")
+            self._update_queue_actions()
+            return
+        self._set_status_message("History cleared.")
+        self._update_queue_actions()
+
+    def _handle_delete_queue(self) -> None:
+        table = self._queue_table
+        if table is None:
+            self._set_status_message("Queue table unavailable.")
+            return
+
+        api = self._require_queue_api()
+        if api is None:
+            return
+
+        qtable_controls = self._qtable_controls
+        if qtable_controls is None:
+            self._set_status_message("Queue controls unavailable.")
+            return
+
+        pending_uids = qtable_controls.selected_row_uids(pending_only=True)
+        if not qtable_controls.has_selection():
+            self._set_status_message("No queue rows selected.")
+            return
+        if not pending_uids:
+            self._set_status_message("Only queued plans can be deleted.")
+            return
+
+        try:
+            api.delete_queue(pending_uids)
+        except Exception:
+            self._set_status_message("Failed to delete selected queue items.")
+            return
+
+        count = len(pending_uids)
+        suffix = "" if count == 1 else "s"
+        self._set_status_message(f"Delete request sent for {count} queued plan{suffix}.")
+        self._update_queue_actions()
         
 
     # ------------------------------------------------------------------
     # Internal utilities
+
+    def _require_queue_api(self, *, notify: bool = True) -> Optional[Any]:
+        """
+        Return the queue API instance if available.
+
+        When ``notify`` is True, emit a status message explaining why the API
+        could not be returned (missing controller or API).
+        """
+        controller = self._controller
+        if controller is None:
+            if notify:
+                self._set_status_message("Queue controller unavailable.")
+            return None
+        api = getattr(controller, "_api", None)
+        if api is None:
+            if notify:
+                self._set_status_message("Queue API unavailable.")
+            return None
+        return api
 
     def _handle_local_pending_reorder(self, uid: str, target_index: int) -> None:
         if not self._pending_items:
@@ -460,8 +566,8 @@ class QueueMonitorWidget(QWidget):
             self._queue_table.blockSignals(False)
             self._suppress_item_changed = False
 
-        if self._queue_controls is not None:
-            self._queue_controls.sync_pending_items(self._pending_raw_items)
+        if self._qtable_controls is not None:
+            self._qtable_controls.sync_pending_items(self._pending_raw_items)
 
     def _handle_item_changed(self, cell: QTableWidgetItem) -> None:
         
@@ -490,9 +596,12 @@ class QueueMonitorWidget(QWidget):
             column_id = self._columns[column_index].column_id
 
         plan_name = self._extract_plan_name(self._pending_raw_items[row])
+        print(plan_name)
         source_key = cell.data(QUEUE_ITEM_KWARG_KEY_ROLE)
         target_key = source_key if isinstance(source_key, str) and source_key else column_id
+        print(f"source_key: {source_key}, target_key: {target_key}")
         raw_item = self._pending_raw_items[row]
+        print(f"raw_item: {raw_item}")
         if not isinstance(raw_item, MutableMapping):
             self._revert_pending_edit(row, column_index, cell, "Unable to edit this entry.")
             return
@@ -519,9 +628,17 @@ class QueueMonitorWidget(QWidget):
         self._pending_items[row] = prepare_display_item(raw_item)
         row_values = self._get_row_values(row + (1 if running_uid != "" else 0))
 
-        api = getattr(self._controller, "_api", None)
+        api = self._require_queue_api(notify=False)
         if api is None:
-            self._revert_pending_edit(row, column_index, cell, "Queue controller unavailable.", previous_raw, previous_display, old_text)
+            self._revert_pending_edit(
+                row,
+                column_index,
+                cell,
+                "Queue controller unavailable.",
+                previous_raw,
+                previous_display,
+                old_text,
+            )
             return
 
         try:

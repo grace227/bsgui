@@ -36,9 +36,16 @@ def load_config(path: pathlib.Path) -> dict:
     return data
 
 
-def resolve_config_path(argument: Optional[pathlib.Path]) -> Optional[pathlib.Path]:
+def resolve_config_path(
+    argument: Optional[pathlib.Path],
+    beamline: Optional[str] = None,
+) -> Optional[pathlib.Path]:
     if argument:
         return argument
+    if beamline:
+        candidate = pathlib.Path("bsgui/config") / f"{beamline}_widgets.yaml"
+        if candidate.exists():
+            return candidate
     default_path = pathlib.Path("bsgui/config/widgets.yaml")
     if default_path.exists():
         return default_path
@@ -174,12 +181,18 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         default=None,
         help="Path to a YAML configuration file (default: bsgui/config/widgets.yaml if present)",
     )
+    parser.add_argument(
+        "--beamline",
+        type=str,
+        default=None,
+        help="Beamline identifier to load bsgui/config/<beamline>_widgets.yaml",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: List[str]) -> int:
     args = parse_args(argv)
-    config_path = resolve_config_path(args.config)
+    config_path = resolve_config_path(args.config, args.beamline)
     config = load_config(config_path) if config_path else {}
 
     logging.basicConfig(level=logging.INFO)
