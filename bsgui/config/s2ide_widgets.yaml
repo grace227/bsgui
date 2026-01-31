@@ -1,0 +1,206 @@
+# Complete tab and widget configuration for the Beamline Control GUI.
+
+app:
+  title: Beamline Control
+  window_size: [1200, 800]
+  toolbar:
+    enabled: true
+    actions:
+      - id: open_xrf_file
+        text: Open XRF File…
+        shortcut: Ctrl+O
+        tooltip: Select an XRF data file to visualize
+        target_widget: scan_setup
+
+tabs:
+  - key: scan_setup
+    title: Scan Setup
+    description: Configure XRF and/or Ptychography loaders that share a plotting canvas.
+    start_expanded: true
+    options:
+      loaders:
+        xrf:
+          enabled: true
+          loader_path: "mic_vis.common.load_xrf:load_h5_file"
+          search_paths:
+            - ./data/img.dat
+          file_patterns:
+            - "*.h5"
+          elements:
+            - Total_Fluores
+        ptycho:
+          enabled: true
+          search_paths:
+            - ./data/ptycho
+      plan_editor:
+        enabled: true
+        kinds:
+          - single
+          - batch
+        plans:
+          - kind: single
+          - kind: batch
+        kind_parameters:
+          batch:
+            - name: iterate_variable
+              description: Name of one of the plan's variables to iterate over
+              default: smp_theta
+            - name: iterate_starting_value
+              description: Starting value of the iterate variable
+              default: 0.0
+            - name: iterate_ending_value
+              description: Ending value of the iterate variable
+              default: 10.0
+            - name: iterate_step_size
+              description: Step size of the iterate variable
+              default: 0.1
+        roi_key_map:
+          samplename:
+            - samplename
+          title:
+            - user_comment
+            - user_comments
+            - title
+          width:
+            - width_mm
+            - width
+          height:
+            - height_mm
+            - height
+          x:
+            - x_center_mm
+            - x_center
+          y:
+            - y_center_mm
+            - y_center
+          z: 
+            - z_center_mm
+            - z_center
+            - sample_z
+          dwell:
+            - dwell_time_ms
+            - dwell_time
+            - dwell_ms
+            - dwell_s
+            - dwell
+          stepsize_x:
+            - stepsize_x_mm
+            - stepsize_x
+          stepsize_y:
+            - stepsize_y_mm
+            - stepsize_y
+
+      queue_status:
+        enabled: true
+        layout_slot: queue_status
+        labels:
+          connected:
+            title: "QServer Connected:"
+            label: Disconnected
+          qserver_address:
+            title: "QServer Address:"
+            label: Unknown
+          manager_state:
+            title: "QServer State:"
+            label: Unknown
+          re_state:
+            title: "RunEngine State:"
+            label: Unknown
+          worker_environment_exists:
+            title: "Worker Environment Exists:"
+            label: Unknown
+          worker_environment_state:
+            title: "Worker Environment Status:"
+            label: Unknown
+          items_in_history:
+            title: "Items In History:"
+            label: Unknown
+          running_item_uid:
+            title: "Running Item UID:"
+            label: Unknown
+          items_in_queue:
+            title: "Items In Queue:"
+            label: Unknown
+
+      console_output:
+        enabled: true
+        layout_slot: console_output
+        title: "QServer Console"
+        max_entries: 1000
+        auto_scroll: true
+
+
+      layout:
+        type: grid
+        components:
+          loader_panel:
+            row: 0
+            column: 0
+            row_span: 1
+            column_span: 2
+          plan_editor:
+            row: 1
+            column: 2
+            row_span: 4
+            column_span: 1
+          queue_status:
+            row: 0
+            column: 2
+            row_span: 1
+            column_span: 1
+          canvas:
+            row: 1
+            column: 0
+            row_span: 3
+            column_span: 2
+          console_output:
+            row: 4
+            column: 0
+            row_span: 1
+            column_span: 2
+        row_stretch:
+          "0": 0
+          "1": 1
+          "2": 1
+          "3": 0
+          "4": 0
+        column_stretch:
+          "0": 1
+          "1": 1
+          "2": 0
+
+  - key: qserver_monitor
+    title: Queue Monitor
+    description: Monitor Bluesky Queue Server status, pending plans, and progress.
+    start_expanded: true
+    options:
+      poll_interval_ms: 5000
+      auto_connect: true
+      show_completed_limit: 15
+      progress:
+        show_activity_indicator: true
+        show_percentage: true
+      client:
+        type: zmq
+        endpoints:
+          info_env_var: QSERVER_ZMQ_INFO_ADDRESS
+          control_env_var: QSERVER_ZMQ_CONTROL_ADDRESS
+      columns:
+        - id: index
+          label: ID
+          stretch: true
+        - id: state
+          label: Status
+          stretch: true
+
+layout:
+  type: tabs
+  tab_order:
+    - scan_setup
+    - qserver_monitor
+  status_bar:
+    enabled: true
+    messages:
+      idle: Ready.
+      loading_data: Loading data file…
+      queue_refresh: Updating queue status…

@@ -199,12 +199,19 @@ def register_default_widgets(
                 search_paths=search_paths,
                 file_patterns=tuple(ptycho_cfg.get("file_patterns", ["*.tif"])),
             )
+            
+            try:
+                qserver_controller = ensure_controller()
+            except Exception:
+                qserver_controller = None
+
             loader_widget = PtychographyLoaderWidget(
                 scan_numbers=ptycho_cfg.get("scan_numbers"),
                 roi_types=ptycho_cfg.get("roi_types"),
                 recon_methods=ptycho_cfg.get("recon_methods"),
                 iteration_files=ptycho_cfg.get("iteration_files"),
                 initial_folder=search_paths[0] if search_paths else None,
+                qserver_controller=qserver_controller,
             )
             return loader_widget, controller
 

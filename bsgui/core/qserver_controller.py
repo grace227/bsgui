@@ -318,8 +318,14 @@ class QServerController(QObject):
                 if not isinstance(pname, str):
                     continue
                 default = param.get("default")
+
                 param_desc = param.get("description") if isinstance(param.get("description"), str) else None
-                raw_type = param.get("type_name")
+                annotated_type = param.get("annotation")
+                if annotated_type is None:
+                    raw_type = None
+                else:
+                    raw_type = annotated_type.get("type")
+
                 if not raw_type and isinstance(param_desc, str) and "Type:" in param_desc:
                     raw_type = param_desc.split("Type:")[-1].strip()
                 if not raw_type and default is not None:
@@ -329,6 +335,7 @@ class QServerController(QObject):
                         raw_type = "int"
                     elif isinstance(default, float):
                         raw_type = "float"
+
                 parameters.append(
                     PlanParameter(
                         name=pname,
