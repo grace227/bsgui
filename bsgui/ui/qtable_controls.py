@@ -4,12 +4,27 @@ from __future__ import annotations
 
 from typing import Callable, Mapping, Optional, Sequence
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QRegularExpression
 from PySide6.QtGui import QDropEvent
-from PySide6.QtWidgets import QAbstractItemView, QTableWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QDialogButtonBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+from PySide6.QtGui import QDoubleValidator, QIntValidator
+from PySide6.QtGui import QRegularExpressionValidator
 from shiboken6 import Shiboken
 
 from ..core.qserver_controller import QServerController
+from ..core.queue_item_utils import build_update_payload, format_scalar
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -108,6 +123,8 @@ class QueueTableCursorController(QObject):
         table.setDefaultDropAction(Qt.MoveAction)
         table.viewport().setAcceptDrops(False)
         table.setDragDropMode(QAbstractItemView.NoDragDrop)
+        table.setContextMenuPolicy(Qt.CustomContextMenu)
+        table.customContextMenuRequested.connect(self._handle_context_menu)
 
     def _update_drag_state(self) -> None:
         table = self._table
@@ -270,6 +287,113 @@ class QueueTableCursorController(QObject):
         self._pending_drag_uid = None
         self._drag_enabled = False
 
+    def _handle_context_menu(self, pos) -> None:
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return
+        row = table.rowAt(pos.y())
+        if row < 0:
+            return
+        table.setCurrentCell(row, max(0, table.currentColumn()))
+        menu = QMenu(table)
+        edit_action = menu.addAction("Edit Plan Parameters")
+        chosen = menu.exec(table.viewport().mapToGlobal(pos))
+        print(f"chosen: {chosen}, edit_action: {edit_action}")
+        if chosen == edit_action:
+            self._open_parameter_editor(row)
+
+    def _open_parameter_editor(self, row: int) -> None:
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return
+        uid, state = self._lookup_row_uid_and_state(row)
+        if not uid:
+            emit_status("Unable to determine queue item UID.")
+            return
+        if state != QUEUE_ITEM_STATE_PENDING:
+            emit_status("Only queued plans can be edited.")
+            return
+
+        controller = self._controller
+        api = getattr(controller, "_api", None) if controller else None
+        if api is None:
+            emit_status("Queue controller unavailable.")
+            return
+
+        try:
+            raw_item = api.fetch_from_queue_history(uid)
+        except Exception:  # pragma: no cover - runtime safeguard
+            emit_status("Failed to fetch queue item details.")
+            return
+        if not isinstance(raw_item, Mapping):
+            emit_status("Queue item payload unavailable.")
+            return
+
+        plan_name = self._extract_plan_name(raw_item)
+        if not plan_name:
+            emit_status("Unable to determine plan name.")
+            return
+
+        definitions = controller.get_allowed_plan_definitions() if controller else []
+        plan_definitions = {definition.name: definition for definition in definitions}
+        definition = plan_definitions.get(plan_name)
+        if definition is None:
+            emit_status(f"No plan definition available for '{plan_name}'.")
+            return
+
+        dialog = QueueItemParameterDialog(
+            plan_name=plan_name,
+            parameters=definition.parameters,
+            raw_item=raw_item,
+            parent=table,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        row_values = dialog.collect_values()
+        try:
+            payload = build_update_payload(
+                raw_item,
+                row_values,
+                exclude_keys={"name", "status"},
+                plan_definitions=plan_definitions,
+                plan_name=plan_name,
+            )
+        except ValueError as exc:
+            emit_status(f"Invalid value: {exc}")
+            return
+
+        update_fn = getattr(api, "item_update", None) or getattr(api, "queue_item_update", None)
+        if update_fn is None:
+            emit_status("Queue API does not support updates.")
+            return
+
+        try:
+            response = update_fn(item=payload, replace=False)
+        except Exception:  # pragma: no cover - runtime safeguard
+            emit_status("Failed to submit queue item update.")
+            return
+
+        message = "Queue item updated."
+        success = True
+        if isinstance(response, Mapping):
+            success = bool(response.get("success", False))
+            message = response.get("msg", message) or message
+
+        emit_status(message if success else message or "Queue item update rejected.")
+
+    @staticmethod
+    def _extract_plan_name(item: Mapping[str, object]) -> str:
+        direct = item.get("name") if isinstance(item, Mapping) else None
+        if isinstance(direct, str) and direct:
+            return direct
+        nested = item.get("item") if isinstance(item, Mapping) else None
+        if isinstance(nested, Mapping):
+            nested_name = nested.get("name")
+            if isinstance(nested_name, str) and nested_name:
+                return nested_name
+        return ""
+
     @staticmethod
     def _extract_uid(item: Mapping[str, object]) -> Optional[str]:
         candidates = (
@@ -299,3 +423,133 @@ class QueueTableCursorController(QObject):
         if current_row is not None and current_row >= 0:
             rows.add(current_row)
         return rows
+
+
+class QueueItemParameterDialog(QDialog):
+    """Edit plan parameters for a queued item."""
+
+    def __init__(
+        self,
+        *,
+        plan_name: str,
+        parameters,
+        raw_item: Mapping[str, object],
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Edit Parameters: {plan_name}")
+        self._parameters = list(parameters)
+        self._raw_item = raw_item
+        self._value_fields: dict[str, QLineEdit] = {}
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Plan: {plan_name}"))
+
+        self._table = QTableWidget(0, 2, self)
+        self._table.setHorizontalHeaderLabels(["Parameter", "Value"])
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self._table)
+
+        self._build_rows()
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Apply")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def collect_values(self) -> dict[str, str]:
+        return {name: field.text() for name, field in self._value_fields.items()}
+
+    def _build_rows(self) -> None:
+        current_values = self._extract_current_values()
+        self._table.setRowCount(len(self._parameters))
+
+        for row, parameter in enumerate(self._parameters):
+            name_text = parameter.name
+            if getattr(parameter, "required", False):
+                name_text = f"{name_text} *"
+            name_item = QTableWidgetItem(name_text)
+            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            if getattr(parameter, "description", None):
+                name_item.setToolTip(parameter.description)
+            self._table.setItem(row, 0, name_item)
+
+            field = QLineEdit()
+            if parameter.name in current_values:
+                field.setText(current_values[parameter.name])
+            else:
+                default_label = self._format_default_label(parameter)
+                if default_label:
+                    field.setPlaceholderText(default_label)
+            if getattr(parameter, "description", None):
+                field.setToolTip(parameter.description)
+            validator = self._build_validator(parameter, field)
+            if validator is not None:
+                field.setValidator(validator)
+
+            container = QWidget()
+            container_layout = QHBoxLayout(container)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.addWidget(field)
+            self._table.setCellWidget(row, 1, container)
+
+            self._value_fields[parameter.name] = field
+
+    def _extract_current_values(self) -> dict[str, str]:
+        values: dict[str, str] = {}
+        kwargs_sources = []
+        direct_kwargs = self._raw_item.get("kwargs")
+        if isinstance(direct_kwargs, Mapping):
+            kwargs_sources.append(direct_kwargs)
+        nested_item = self._raw_item.get("item")
+        if isinstance(nested_item, Mapping):
+            nested_kwargs = nested_item.get("kwargs")
+            if isinstance(nested_kwargs, Mapping):
+                kwargs_sources.append(nested_kwargs)
+
+        for parameter in self._parameters:
+            found = False
+            value = None
+            for mapping in kwargs_sources:
+                if parameter.name in mapping:
+                    value = mapping.get(parameter.name)
+                    found = True
+                    break
+            if found:
+                if value is None:
+                    values[parameter.name] = "None"
+                else:
+                    values[parameter.name] = format_scalar(value)
+        return values
+
+    @staticmethod
+    def _format_default_label(parameter) -> str:
+        default = getattr(parameter, "default", None)
+        if default is None:
+            return ""
+        return f"Default: {format_scalar(default)}"
+
+    @staticmethod
+    def _build_validator(parameter, field: QLineEdit):
+        type_name = (
+            parameter.inferred_type().lower()
+            if hasattr(parameter, "inferred_type")
+            else (parameter.type_name or "str").lower()
+        )
+        if type_name == "int":
+            validator = QIntValidator(field)
+            validator.setRange(-2147483648, 2147483647)
+            return validator
+        if type_name == "float":
+            validator = QDoubleValidator(field)
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            validator.setDecimals(10)
+            return validator
+        if type_name == "bool":
+            regex = QRegularExpression("^(?i)(true|false|1|0|yes|no|on|off|y|n)$")
+            return QRegularExpressionValidator(regex, field)
+        return None

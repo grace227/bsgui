@@ -12,7 +12,6 @@ from PySide6.QtGui import QColor, QPalette, QBrush
 
 from PySide6.QtWidgets import (
     QLabel,
-    QListWidget,
     QPushButton,
     QProgressBar,
     QScrollArea,
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QHeaderView
 
 from .qtable_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
+from .qserver_planning import QServerPlanningWidget
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -103,7 +103,6 @@ class QueueMonitorWidget(QWidget):
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
 
-        self._completed_list = QListWidget()
         self._completed_text_color = QColor("#5c5c5c")
         self._running_item_color = QColor("#2e7d32")
         self._start_queue_button = QPushButton("Start Queue")
@@ -151,8 +150,8 @@ class QueueMonitorWidget(QWidget):
         layout.addWidget(QLabel("Active Plan"))
         layout.addWidget(self._active_label)
         layout.addWidget(self._progress)
-        layout.addWidget(QLabel("Recently Completed"))
-        layout.addWidget(self._completed_list)
+        self._planning_widget = QServerPlanningWidget(controller=controller, layout=layout)
+        # layout.addWidget(self._planning_widget)
 
         if controller is not None:
             self.set_controller(controller)
@@ -175,6 +174,8 @@ class QueueMonitorWidget(QWidget):
         self._load_plan_definitions()
         if self._qtable_controls is not None:
             self._qtable_controls.set_controller(controller)
+        if hasattr(self, "_planning_widget"):
+            self._planning_widget.set_controller(controller)
         controller.queueUpdated.connect(self._handle_queue_updated)
         snapshot = controller.fetch_snapshot()
         if snapshot:
@@ -223,7 +224,6 @@ class QueueMonitorWidget(QWidget):
         self._refresh_queue_table()
 
     def update_completed(self, completed: Sequence[Mapping[str, Any]]) -> None:
-        self._completed_list.clear()
         self._completed_items = [prepare_display_item(item, completed=True) for item in completed]
         self._completed_items = self._completed_items[::-1]
         self._refresh_queue_table()
