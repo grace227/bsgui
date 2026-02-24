@@ -21,8 +21,7 @@ tabs:
       loaders:
         xrf:
           enabled: true
-          # loader_path: "mic_vis.common.load_xrf:load_h5_file"
-          loader_path: "mictools.data_proc:load_processed_xspress3"
+          loader_path: "mic_vis.common.load_xrf:load_h5_file"
           search_paths:
             - ./data/img.dat
           file_patterns:
@@ -38,7 +37,7 @@ tabs:
           elements:
             - Total_Fluores
         ptycho:
-          enabled: true
+          enabled: false
           search_paths:
             - ./data/ptycho
       plan_editor:
@@ -150,23 +149,23 @@ tabs:
             column: 0
             row_span: 1
             column_span: 2
-          plan_editor:
-            row: 1
-            column: 2
-            row_span: 4
-            column_span: 1
           queue_status:
             row: 0
             column: 2
             row_span: 1
             column_span: 1
+          plan_editor:
+            row: 1
+            column: 2
+            row_span: 7
+            column_span: 1
           canvas:
             row: 1
             column: 0
-            row_span: 3
+            row_span: 4
             column_span: 2
           console_output:
-            row: 4
+            row: 7
             column: 0
             row_span: 1
             column_span: 2

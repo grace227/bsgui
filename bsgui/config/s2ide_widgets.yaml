@@ -21,20 +21,11 @@ tabs:
       loaders:
         xrf:
           enabled: true
-          # loader_path: "mic_vis.common.load_xrf:load_h5_file"
-          loader_path: "mictools.data_proc:load_processed_xspress3"
+          loader_path: "mic_vis.common.load_xrf:load_h5_file"
           search_paths:
             - ./data/img.dat
           file_patterns:
             - "*.h5"
-            - "*.h50"
-            - "*.h51"
-            - "*.h52"
-            - "*.h53"
-            - "*.h54"
-            - "*.h55"
-            - "*.h56"
-            - "*.h57"
           elements:
             - Total_Fluores
         ptycho:
@@ -65,10 +56,7 @@ tabs:
               default: 0.1
         roi_key_map:
           samplename:
-            - sample_name
             - samplename
-            - samplename_test
-            - Sample_Name
           title:
             - user_comment
             - user_comments

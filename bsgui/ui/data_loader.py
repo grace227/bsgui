@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import pathlib
-from typing import List, Optional, Sequence
+from typing import List, Mapping, Optional, Sequence, TYPE_CHECKING
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import (
-    QComboBox,
-    QGridLayout,
-    QLabel,
-    QPushButton,
-    QFileDialog,
-    QWidget,
-)
+from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QPushButton, QFileDialog, QWidget
 
 from ..core.data_controller import DataVisualizationController
+if TYPE_CHECKING:
+    from ..core.qserver_controller import QServerController
+
+
+class RefreshingComboBox(QComboBox):
+    aboutToShowPopup = Signal()
+
+    def showPopup(self) -> None:  # pragma: no cover - UI hook
+        self.aboutToShowPopup.emit()
+        super().showPopup()
 
 
 class BaseLoaderWidget(QWidget):
@@ -54,6 +57,8 @@ class XRFLoaderWidget(BaseLoaderWidget):
         self._current_folder: Optional[pathlib.Path] = None
         self._file_patterns = list(file_patterns) if file_patterns is not None else []
         self._initial_folder = initial_folder
+        self._qserver_controller: Optional["QServerController"] = None
+        self._worker_status: Optional[str] = None
 
         self._folder_button = QPushButton("XRF Folder")
         self._folder_button.clicked.connect(self._choose_folder)
@@ -61,8 +66,9 @@ class XRFLoaderWidget(BaseLoaderWidget):
         self._folder_label = QLabel("–")
 
         self._file_label = QLabel("XRF Files:")
-        self._file_combo = QComboBox()
+        self._file_combo = RefreshingComboBox()
         self._file_combo.currentIndexChanged.connect(self._update_element_options)
+        self._file_combo.aboutToShowPopup.connect(self._refresh_files_dropdown)
 
         self._element_label = QLabel("Elements:")
         self._element_combo = QComboBox()
@@ -78,29 +84,31 @@ class XRFLoaderWidget(BaseLoaderWidget):
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
 
-    # def initialize(self) -> None:
-    #     controller = self._ensure_controller()
-    #     if not self._file_patterns:
-    #         self._file_patterns = list(controller.file_patterns)
-    #     last_path = controller.last_path
-    #     if last_path and last_path.exists():
-    #         self._set_folder(last_path.parent)
-    #         self._select_file(last_path)
-    #         return
-    #     if self._initial_folder and self._initial_folder.exists():
-    #         self._set_folder(self._initial_folder)
-    #         return
-    #     paths = controller.normalized_paths
-    #     if paths:
-    #         self._set_folder(paths[0])
-    #         return
-    #     self._update_element_options(None)
-    #     self._refresh_files()
+    def set_qserver_controller(self, controller: Optional["QServerController"]) -> None:
+        self._qserver_controller = controller
+
+    def handle_status_update(self, status: Mapping[str, object]) -> None:
+        worker_status = status.get("worker_environment_state") if isinstance(status, Mapping) else None
+        if isinstance(worker_status, str):
+            self._worker_status = worker_status
+        elif worker_status is None:
+            self._worker_status = None
 
     def _choose_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select XRF Folder")
+        initial_dir = self._resolve_dialog_directory()
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select XRF Folder",
+            str(initial_dir) if initial_dir is not None else "",
+        )
         if folder:
             self._set_folder(pathlib.Path(folder))
+
+    def _resolve_dialog_directory(self) -> Optional[pathlib.Path]:
+        controller = self._qserver_controller
+        if controller is not None:
+            path = controller.get_save_data_path()
+            return pathlib.Path(path) if path else None
 
     def _set_folder(self, folder: pathlib.Path) -> None:
         self._current_folder = folder
@@ -122,6 +130,39 @@ class XRFLoaderWidget(BaseLoaderWidget):
             self._file_combo.setCurrentIndex(0)
             self._update_element_options(self._current_folder)
 
+    def _refresh_files_dropdown(self) -> None:
+        folder = self._current_folder
+        latest_files: List[pathlib.Path] = []
+        if folder and folder.exists():
+            latest_files = self._collect_files(folder)
+
+        combo_count = self._file_combo.count()
+        if combo_count == len(latest_files):
+            matches = True
+            for i in range(combo_count):
+                item_path = self._file_combo.itemData(i)
+                if not isinstance(item_path, pathlib.Path) or item_path != latest_files[i]:
+                    matches = False
+                    break
+            if matches:
+                return
+
+        previous_selection = self._file_combo.itemData(self._file_combo.currentIndex())
+        self._file_combo.blockSignals(True)
+        self._file_combo.clear()
+        for path in latest_files:
+            self._file_combo.addItem(path.name, path)
+
+        new_index = -1
+        if isinstance(previous_selection, pathlib.Path) and previous_selection in latest_files:
+            new_index = latest_files.index(previous_selection)
+        elif latest_files:
+            new_index = 0
+
+        if new_index >= 0:
+            self._file_combo.setCurrentIndex(new_index)
+        self._file_combo.blockSignals(False)
+
     def _collect_files(self, folder: pathlib.Path) -> List[pathlib.Path]:
         files: List[pathlib.Path] = []
         for pattern in self._file_patterns:
@@ -129,9 +170,10 @@ class XRFLoaderWidget(BaseLoaderWidget):
         return files
 
     def _update_element_options(self, folder: Optional[pathlib.Path]) -> None:
-        if isinstance(folder, int):
-            folder = self._current_folder
-
+        self._refresh_files_dropdown()
+        # if isinstance(folder, int):
+        #     folder = self._current_folder
+        
         index = self._file_combo.currentIndex()
         if index < 0:
             self._element_combo.clear()
@@ -196,9 +238,12 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         recon_methods: Optional[Sequence[str]] = None,
         iteration_files: Optional[Sequence[str]] = None,
         initial_folder: Optional[pathlib.Path] = None,
+        ptychi_recon: Optional[bool] = True,
+        qserver_controller: Optional["QServerController"] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent=parent)
+        self._qserver_controller = qserver_controller
         self._current_folder: Optional[pathlib.Path] = None
         self._preset_iteration_files = list(iteration_files or [])
         self._initial_folder = initial_folder
@@ -209,9 +254,7 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
 
         self._scan_label = QLabel("Scan Number:")
         self._scan_combo = QComboBox()
-        if scan_numbers:
-            self._scan_combo.addItems(list(scan_numbers))
-        self._scan_combo.currentIndexChanged.connect(self._emit_selection)
+        self._scan_combo.currentIndexChanged.connect(self._refresh_recon_directory)
 
         self._roi_label = QLabel("ROI Type (optional):")
         self._roi_combo = QComboBox()
@@ -259,15 +302,100 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
             self._set_folder(paths[0])
 
     def _choose_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select Ptychography Folder")
+        initial_dir = self._resolve_dialog_directory()
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Ptychography Folder",
+            str(initial_dir) if initial_dir is not None else "",
+        )
         if folder:
             self._set_folder(pathlib.Path(folder))
+
+    def _resolve_dialog_directory(self) -> Optional[pathlib.Path]:
+        controller = self._qserver_controller
+        if controller is not None:
+            path = controller.get_save_data_path()
+            return pathlib.Path(path) if path else None
 
     def _set_folder(self, folder: pathlib.Path) -> None:
         self._current_folder = folder
         self._folder_label.setText(str(folder))
         self._ensure_controller().set_search_paths([folder])
-        self._refresh_iteration_files()
+        self._refresh_scan_numbers()
+        # self._update_element_options(folder)
+        # self._refresh_files()
+
+    def _collect_folders(self, folder: pathlib.Path) -> List[pathlib.Path]:
+        subfolders = [d for d in folder.iterdir() if d.is_dir()]
+        return subfolders
+
+    def _refresh_scan_numbers(self) -> None:
+        self._scan_combo.blockSignals(True)
+        self._scan_combo.clear()
+        self._roi_combo.clear()
+        self._recon_combo.clear()
+        self._iteration_combo.clear()
+
+        folder = self._current_folder
+        if folder and folder.exists():
+            scan_numbers = self._collect_folders(folder)
+            for path in scan_numbers:
+                if path.name != 'analysis':
+                    self._scan_combo.addItem(path.name, path)
+        self._scan_combo.blockSignals(False)
+
+    def _refresh_roi_directory(self) -> None:
+        self._roi_combo.blockSignals(True)
+        self._roi_combo.clear()
+        self._recon_combo.clear()
+        self._iteration_combo.clear()
+
+        selected_scans_path = self._current_folder / self._scan_combo.currentData()
+
+        if selected_scans_path.exists() and selected_scans_path.match("**/ML_recon/**"):
+            self.ptychirecon_dir_selected = False
+            show_type = "O_phase_roi"
+            roi_folders = self._collect_folders(selected_scans_path)
+            for path in roi_folders:
+                self._roi_combo.addItem(path.name, path)
+            self._roi_combo.setCurrentIndex(0)
+            self.roi_combo.blockSignals(False)
+
+    def _refresh_recon_directory(self) -> None:
+        self._recon_combo.blockSignals(True)
+        self._recon_combo.clear()
+        self._iteration_combo.clear()
+
+        selected_roi_path = self._current_folder / self._roi_combo.currentData()
+
+        if selected_roi_path.exists() and selected_roi_path.match("**/ML_recon/**"):
+            self.ptychirecon_dir_selected = True
+            show_type = "object_ph"
+            recon_folders = self._collect_folders(selected_roi_path)
+            for path in recon_folders:
+                self._recon_combo.addItem(path.name, path)
+            self._recon_combo.setCurrentIndex(0)
+            self.recon_combo.blockSignals(False)
+
+
+            
+        # else:
+        #     # This considers recon by Ptychi
+        #     self.ptychirecon_dir_selected = True
+        #     recon_methods = found_folders
+        #     show_type = "object_ph"
+
+    
+    # def _choose_folder(self) -> None:
+    #     folder = QFileDialog.getExistingDirectory(self, "Select Ptychography Folder")
+    #     if folder:
+    #         self._set_folder(pathlib.Path(folder))
+
+    # def _set_folder(self, folder: pathlib.Path) -> None:
+    #     self._current_folder = folder
+    #     self._folder_label.setText(str(folder))
+    #     self._ensure_controller().set_search_paths([folder])
+    #     self._refresh_iteration_files()
 
     def _refresh_iteration_files(self) -> None:
         self._iteration_combo.blockSignals(True)

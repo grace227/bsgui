@@ -21,7 +21,7 @@ tabs:
       loaders:
         xrf:
           enabled: true
-          # loader_path: "mic_vis.common.load_xrf:load_h5_file"
+          #loader_path: "mic_vis.common.load_xrf:load_h5_file"
           loader_path: "mictools.data_proc:load_processed_xspress3"
           search_paths:
             - ./data/img.dat
@@ -49,6 +49,8 @@ tabs:
         plans:
           - kind: single
           - kind: batch
+        allowed_plans:
+          - fly2d
         kind_parameters:
           batch:
             - name: iterate_variable

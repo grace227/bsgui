@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Optional
 
 from .qserver_controller import PlanDefinition
@@ -180,6 +181,10 @@ def resolve_queue_value(
     available_params: Optional[set[str]] = None,
     running = False,
 ) -> tuple[str, Optional[str]]:
+
+    # if row_index == 10:
+    #     print(f"resolve_queue_value: {column_id=},\n {item=},\n {row_index=},\n {roi_key_map=},\n {roi_value_aliases=},\n {available_params=},\n {running=}")
+
     if column_id == "index":
         return str(row_index + 1), None
     if column_id in roi_key_map:
@@ -221,6 +226,12 @@ def resolve_queue_value(
             if item.get("result").get("scan_ids", None) is not None:
                 scan_ids = item.get("result").get("scan_ids")
                 return format_sequence(scan_ids), column_id
+        return "", column_id
+    if column_id == "time_start":
+        if item.get("result", None) is not None:
+            if item.get("result").get("time_start", None) is not None:
+                time_start = item.get("result").get("time_start")
+                return format_time(time_start), column_id
         return "", column_id
     if column_id in {"uid", "item_uid"}:
         uid = value or item.get("item_uid") or item.get("uid")
@@ -351,6 +362,9 @@ def build_update_payload(
     param_lookup = {parameter.name: parameter for parameter in plan.parameters} if plan else {}
 
     payload = clone_item(raw_item)
+    # print(f"payload: {payload}")
+    # print(f"param_lookup: {param_lookup}")
+    # print(f"exclude: {exclude}")
     kwargs = ensure_kwargs_container(payload)
 
     # Start from existing kwargs so we remove blanked entries.
@@ -376,6 +390,8 @@ def build_update_payload(
         kwargs.pop(key, None)
     kwargs.update(updates)
 
+
+    print(f"payload: {payload}")
     return payload
 
 
@@ -385,5 +401,17 @@ def format_scalar(value: Any) -> str:
     return str(value)
 
 
+def format_time(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    if value is None:
+        return ""
+    try:
+        timestamp = float(value)
+        return datetime.fromtimestamp(timestamp).strftime(fmt)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(value)
+
+
 def format_sequence(value: Iterable[Any]) -> str:
     return ", ".join(str(entry) for entry in value)
+
+

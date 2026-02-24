@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator
 from PySide6.QtCore import QRegularExpression
 from ..core.qserver_controller import PlanDefinition, PlanParameter
+from .qserver_planning import emit_plan_added
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
     from ..core.qserver_controller import QServerController
@@ -114,12 +115,15 @@ class PlanEditorWidget(QWidget):
         self._batch_button.setEnabled(False)
         self._add_button = QPushButton("Add to Queue")
         self._add_button.clicked.connect(self._emit_submission)
+        self._planning_button = QPushButton("Planning")
+        self._planning_button.clicked.connect(self._emit_planning)
         self._reset_button = QPushButton("Reset")
         self._reset_button.clicked.connect(self._populate_parameters)
 
         for button in [
             self._batch_button,
             self._add_button,
+            self._planning_button,
             self._reset_button,
         ]:
             button_layout.addWidget(button)
@@ -218,6 +222,7 @@ class PlanEditorWidget(QWidget):
 
         extras = self._extra_parameters.get(self._current_kind, [])
         parameters = list(extras) + list(definition.parameters)
+
         self._parameter_table.setRowCount(len(parameters))
         self._parameter_rows.clear()
 
@@ -390,11 +395,53 @@ class PlanEditorWidget(QWidget):
                     normalized[str(key)] = collected
         return normalized
 
+    
+    def _emit_planning(self) -> None:
+        definition = self.current_plan()
+
+        if definition is None:
+            return
+
+        #TODO: modify the self._get_plan_time() to check against the plan type instead of just the time
+        # if self._get_plan_time() is None or self._get_plan_time() <= 0:
+        #     self._set_status("Invalid plan time", error=True)
+        #     # return
+
+        print(f"definition: {definition}")
+        plan_item = {
+            "item_type": "plan",
+            "name": definition.name,
+            "kwargs": {},
+        }
+
+        for name, (checkbox, line_edit, parameter, default_value, default_label) in self._parameter_rows.items():
+            expected_type = parameter.inferred_type() if hasattr(parameter, "inferred_type") else (parameter.type_name or "str")
+            if checkbox.isChecked():
+                value_text = line_edit.text()
+                try:
+                    value = parameter.coerce(value_text)
+                    plan_item["kwargs"][name] = value
+                except (ValueError, TypeError):
+                    self._set_status(
+                        f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})",
+                        error=True,
+                    )
+                    return
+
+        emit_plan_added(plan_item)
+        self._set_status(f"Planned '{definition.name}'.")
+
+
     def _emit_submission(self) -> None:
         definition = self.current_plan()
 
         if definition is None:
             return
+
+        #TODO: modify the self._get_plan_time() to check against the plan type instead of just the time
+        # if self._get_plan_time() is None or self._get_plan_time() <= 0:
+        #     self._set_status("Invalid plan time", error=True)
+        #     return
 
         queue_item = {
             "item_type": "plan",
@@ -408,18 +455,13 @@ class PlanEditorWidget(QWidget):
                 value_text = line_edit.text()
                 try:
                     value = parameter.coerce(value_text)
+                    queue_item['kwargs'][name] = value
                 except (ValueError, TypeError):
                     self._set_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})", error=True)
                     return
 
             else:
                 value = default_value
-
-            if "stepsize" in name and value <= 0:
-                self._set_status(f"Invalid value '{value}' for parameter '{name}' (expected positive number)", error=True)
-                return
-
-            queue_item['kwargs'][name] = value
 
         if self._controller is None:
             self._set_status('No controller available to queue plan', error=True)
@@ -460,4 +502,3 @@ class PlanEditorWidget(QWidget):
             return None
 
         return (width / steps_x) * (height / steps_y) * dwell * OVERHEAD_FACTOR
-
