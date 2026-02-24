@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from copy import deepcopy
+from datetime import datetime
 from typing import Any, Optional
 
 from .qserver_controller import PlanDefinition
@@ -226,6 +227,12 @@ def resolve_queue_value(
                 scan_ids = item.get("result").get("scan_ids")
                 return format_sequence(scan_ids), column_id
         return "", column_id
+    if column_id == "time_start":
+        if item.get("result", None) is not None:
+            if item.get("result").get("time_start", None) is not None:
+                time_start = item.get("result").get("time_start")
+                return format_time(time_start), column_id
+        return "", column_id
     if column_id in {"uid", "item_uid"}:
         uid = value or item.get("item_uid") or item.get("uid")
         return str(uid or ""), column_id
@@ -394,5 +401,17 @@ def format_scalar(value: Any) -> str:
     return str(value)
 
 
+def format_time(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    if value is None:
+        return ""
+    try:
+        timestamp = float(value)
+        return datetime.fromtimestamp(timestamp).strftime(fmt)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return str(value)
+
+
 def format_sequence(value: Iterable[Any]) -> str:
     return ", ".join(str(entry) for entry in value)
+
+

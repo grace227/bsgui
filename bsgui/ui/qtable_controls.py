@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from typing import Callable, Mapping, Optional, Sequence
 
 from PySide6.QtCore import QEvent, QObject, Qt, QRegularExpression
@@ -31,6 +32,35 @@ QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
 QUEUE_ITEM_STATE_ROLE = Qt.ItemDataRole.UserRole + 2
 QUEUE_ITEM_COLUMN_ROLE = Qt.ItemDataRole.UserRole + 3
 QUEUE_ITEM_STATE_PENDING = "pending"
+
+
+def export_qtable_to_csv(
+    table: QTableWidget,
+    file_path: str,
+    *,
+    rows: Optional[Sequence[int]] = None,
+    encoding: str = "utf-8-sig",
+) -> int:
+    """Write a QTableWidget to CSV and return the number of exported data rows."""
+    row_indexes = list(range(table.rowCount())) if rows is None else [int(row) for row in rows]
+
+    headers: list[str] = []
+    for column in range(table.columnCount()):
+        header_item = table.horizontalHeaderItem(column)
+        headers.append(header_item.text() if header_item is not None else f"Column {column + 1}")
+
+    with open(file_path, "w", newline="", encoding=encoding) as stream:
+        writer = csv.writer(stream)
+        writer.writerow(headers)
+        for row in row_indexes:
+            writer.writerow(
+                [
+                    table.item(row, column).text() if table.item(row, column) is not None else ""
+                    for column in range(table.columnCount())
+                ]
+            )
+
+    return len(row_indexes)
 
 
 class QueueTableCursorController(QObject):

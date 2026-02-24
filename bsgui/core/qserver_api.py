@@ -39,8 +39,47 @@ class QServerAPI(REManagerAPI):
 
         return self._rm_status
 
+    def scan_pause(self) -> Dict[str, Any]:
+        try:
+            response = self.re_pause(option="immediate")
+        except Exception as exc:
+            msg = f"Not able to pause the scan: {exc}"
+            print(msg)
+            return {"success": False, "msg": msg}
+
+        if isinstance(response, Mapping):
+            return dict(response)
+        return {"success": True, "msg": "Pause request sent."}
+
+    def scan_resume(self) -> Dict[str, Any]:
+        try:
+            response = self.re_resume()
+        except Exception as exc:
+            msg = f"Not able to resume the scan: {exc}"
+            print(msg)
+            return {"success": False, "msg": msg}
+
+        if isinstance(response, Mapping):
+            return dict(response)
+        return {"success": True, "msg": "Resume request sent."}
+
+    def scan_abort(self) -> Dict[str, Any]:
+        try:
+            response = self.re_abort()
+        except Exception as exc:
+            msg = f"Not able to abort the scan: {exc}"
+            print(msg)
+            return {"success": False, "msg": msg}
+
+        if isinstance(response, Mapping):
+            return dict(response)
+        return {"success": True, "msg": "Abort request sent."}
+    
     def isqueue_running(self) -> bool:
-        return (not self._rm_status.get("manager_state") == "idle")
+        return self._rm_status.get("manager_state") not in {"idle", "paused"}
+
+    def isRE_paused(self) -> bool:
+        return (self.status().get("re_state") == 'paused')
 
     def isRE_closed(self) -> bool:
         return self._rm_status.get("re_state") == "closed"
@@ -81,6 +120,7 @@ class QServerAPI(REManagerAPI):
 
     def duplicate_queue(self, queue_ids: List[str]) -> None:
         for uid in queue_ids:
+            print(f"duplicating item {uid}")
             item = self.fetch_from_queue_history(uid)
             if item is not None:
                 try:
@@ -92,7 +132,9 @@ class QServerAPI(REManagerAPI):
     def fetch_from_queue_history(self, queue_id: str) -> Dict[str, Any]:
         history = self.history_get().get("items", [])
         queue = self.queue_get().get("items", [])
-        combine = queue + history
+        running = self.queue_get().get("running_item", [])
+
+        combine = queue + history + [running]
 
         item_uids = [item.get("item_uid", None) for item in combine]
         if queue_id in item_uids:

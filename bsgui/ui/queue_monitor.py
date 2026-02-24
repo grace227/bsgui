@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pathlib
 from collections.abc import MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QProgressBar,
+    QFileDialog,
     QScrollArea,
     QSizePolicy,
     QTableWidget,
@@ -23,7 +25,11 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QHeaderView
 
-from .qtable_controls import QueueTableCursorController, QUEUE_ITEM_COLUMN_ROLE
+from .qtable_controls import (
+    QueueTableCursorController,
+    QUEUE_ITEM_COLUMN_ROLE,
+    export_qtable_to_csv,
+)
 from .qserver_planning import QServerPlanningWidget
 from .status_bus import emit_status
 
@@ -83,6 +89,7 @@ class QueueMonitorWidget(QWidget):
         self._suppress_item_changed = False
         self._pending_table_refresh = False
         self._has_active_plan = False
+        self._resume_enabled_after_pause = False
 
         self._queue_table = QTableWidget(0, 0)
         self._queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -121,22 +128,41 @@ class QueueMonitorWidget(QWidget):
         self._delete_queue_button.clicked.connect(self._handle_delete_queue)
         self._delete_queue_button.setEnabled(True)
 
+        self._pause_scan_button = QPushButton("Pause Scan")
+        self._pause_scan_button.clicked.connect(self._handle_pause_scan)
+        self._pause_scan_button.setEnabled(True)
+
+        self._resume_scan_button = QPushButton("Resume Scan")
+        self._resume_scan_button.clicked.connect(self._handle_resume_scan)
+        self._resume_scan_button.setEnabled(True)
+
+        self._abort_scan_button = QPushButton("Abort Scan")
+        self._abort_scan_button.clicked.connect(self._handle_abort_scan)
+        self._abort_scan_button.setEnabled(True)
+
         self._clear_queue_button = QPushButton("Clear Queue")
         self._clear_queue_button.clicked.connect(self._handle_clear_queue)
         self._clear_queue_button.setEnabled(True)
 
-        self._clear_history_button = QPushButton("Clear History")
-        self._clear_history_button.clicked.connect(self._handle_clear_history)
-        self._clear_history_button.setEnabled(True)
+        self._save_history_button = QPushButton("Save History")
+        self._save_history_button.clicked.connect(self._handle_save_history)
+        self._save_history_button.setEnabled(True)
 
         layout = QVBoxLayout(self)
         header_layout = QGridLayout()
         header_layout.addWidget(self._start_queue_button, 0, 0)
-        header_layout.addWidget(self._stop_queue_button, 0, 1)
+        header_layout.addWidget(self._stop_queue_button, 1, 0)
+        header_layout.addWidget(self._clear_queue_button, 2, 0)
+ 
+        header_layout.addWidget(self._pause_scan_button, 0, 1)
+        header_layout.addWidget(self._resume_scan_button, 1, 1)
+        header_layout.addWidget(self._abort_scan_button, 2, 1)
+
         header_layout.addWidget(self._duplicate_queue_button, 0, 2)
-        header_layout.addWidget(self._delete_queue_button, 1, 0)
-        header_layout.addWidget(self._clear_queue_button, 1, 1)
-        header_layout.addWidget(self._clear_history_button, 1, 2)
+        header_layout.addWidget(self._delete_queue_button, 1, 2)
+        header_layout.addWidget(self._save_history_button, 2, 2)
+
+
         layout.addLayout(header_layout)
         table_container = QScrollArea()
         table_container.setWidgetResizable(True)
@@ -184,6 +210,109 @@ class QueueMonitorWidget(QWidget):
     # ------------------------------------------------------------------
     # Snapshot/application helpers
 
+    def _handle_pause_scan(self) -> None:
+        api = self._require_queue_api()
+        if api is None:
+            self._update_queue_actions()
+            return
+
+        response = api.scan_pause()
+        message = "Pause request sent."
+        success = True
+        if isinstance(response, Mapping):
+            success = bool(response.get("success", False))
+            message = response.get("msg", message) or message
+
+        if success:
+            self._resume_enabled_after_pause = True
+
+        self._set_status_message(message)
+        self._update_queue_actions()
+
+    def _handle_resume_scan(self) -> None:
+        api = self._require_queue_api()
+        if api is None:
+            self._update_queue_actions()
+            return
+
+        response = api.scan_resume()
+        message = "Resume request sent."
+        success = True
+        if isinstance(response, Mapping):
+            success = bool(response.get("success", False))
+            message = response.get("msg", message) or message
+
+        if success:
+            self._resume_enabled_after_pause = False
+
+        self._set_status_message(message)
+        self._update_queue_actions()
+
+    def _handle_abort_scan(self) -> None:
+        api = self._require_queue_api()
+        if api is None:
+            self._update_queue_actions()
+            return
+
+        response = api.scan_abort()
+        message = "Abort request sent."
+        success = True
+        if isinstance(response, Mapping):
+            success = bool(response.get("success", False))
+            message = response.get("msg", message) or message
+
+        if success:
+            self._resume_enabled_after_pause = False
+
+        self._set_status_message(message)
+        self._update_queue_actions()
+
+    def _handle_save_history(self) -> None:
+        table = self._queue_table
+        if table is None:
+            self._set_status_message("Queue table unavailable.")
+            return
+
+        completed_rows: list[int] = []
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item is None:
+                continue
+            if item.data(QUEUE_ITEM_STATE_ROLE) == QUEUE_ITEM_STATE_COMPLETED:
+                completed_rows.append(row)
+
+        if not completed_rows:
+            self._set_status_message("No history rows to save.")
+            return
+
+        default_name = "scan_history.csv"
+        initial_path = default_name
+        controller = self._controller
+        if controller is not None:
+            save_dir = controller.get_save_data_path()
+            if save_dir:
+                initial_path = str(pathlib.Path(save_dir) / default_name)
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Scan History",
+            initial_path,
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".csv"):
+            file_path = f"{file_path}.csv"
+
+        try:
+            row_count = export_qtable_to_csv(table, file_path, rows=completed_rows)
+        except Exception as exc:
+            self._set_status_message(f"Failed to save history CSV: {exc}")
+            return
+
+        suffix = "" if row_count == 1 else "s"
+        self._set_status_message(f"Saved {row_count} history row{suffix} to {file_path}.")
+    
     def _handle_queue_updated(self, snapshot: QueueSnapshot) -> None:
         if not self._plan_definitions:
             self._load_plan_definitions()
@@ -231,10 +360,22 @@ class QueueMonitorWidget(QWidget):
     def _update_queue_actions(self) -> None:
         api = self._require_queue_api(notify=False)
         if api is None:
+            self._pause_scan_button.setEnabled(False)
+            self._resume_scan_button.setEnabled(False)
+            self._abort_scan_button.setEnabled(False)
             return
         queue_running = api.isqueue_running()
         re_closed = api.isRE_closed()
+        re_paused = api.isRE_paused()
         queue_stop_pending = api.queue_stop_pending()
+
+        running_controls_enabled = (not re_closed) and queue_running
+        self._pause_scan_button.setEnabled(running_controls_enabled)
+
+        paused_controls_enabled = re_paused and (not queue_running)
+        self._resume_scan_button.setEnabled(paused_controls_enabled)
+        self._abort_scan_button.setEnabled(paused_controls_enabled)
+
         if not queue_stop_pending:
             if not re_closed and queue_running:
                 self._start_queue_button.setEnabled(False)
@@ -305,6 +446,7 @@ class QueueMonitorWidget(QWidget):
             return
 
         pending_uids = qtable_controls.selected_row_uids(pending_only=False)
+        print(f"pending_uids: {pending_uids}")
         if not qtable_controls.has_selection():
             self._set_status_message("No queue rows selected.")
             return
@@ -370,20 +512,6 @@ class QueueMonitorWidget(QWidget):
             self._set_status_message("Failed to clear queue.")
             return
         self._set_status_message("Queue cleared.")
-        self._update_queue_actions()
-
-    def _handle_clear_history(self) -> None:
-        api = self._require_queue_api()
-        if api is None:
-            self._update_queue_actions()
-            return
-        try:
-            api.clear_history()
-        except Exception:
-            self._set_status_message("Failed to clear history.")
-            self._update_queue_actions()
-            return
-        self._set_status_message("History cleared.")
         self._update_queue_actions()
 
     def _handle_delete_queue(self) -> None:
@@ -781,6 +909,7 @@ class QueueMonitorWidget(QWidget):
         # Base plan name column
         add("status", "Status")
         add("name", "Plan")
+        add("time_start", "Start Time")
         add("scan_ids", "Scan ID")
 
         # ROI mapped columns in declared order

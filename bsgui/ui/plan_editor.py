@@ -402,10 +402,12 @@ class PlanEditorWidget(QWidget):
         if definition is None:
             return
 
-        if self._get_plan_time() is None or self._get_plan_time() <= 0:
-            self._set_status("Invalid plan time", error=True)
-            return
+        #TODO: modify the self._get_plan_time() to check against the plan type instead of just the time
+        # if self._get_plan_time() is None or self._get_plan_time() <= 0:
+        #     self._set_status("Invalid plan time", error=True)
+        #     # return
 
+        print(f"definition: {definition}")
         plan_item = {
             "item_type": "plan",
             "name": definition.name,
@@ -436,9 +438,10 @@ class PlanEditorWidget(QWidget):
         if definition is None:
             return
 
-        if self._get_plan_time() is None or self._get_plan_time() <= 0:
-            self._set_status("Invalid plan time", error=True)
-            return
+        #TODO: modify the self._get_plan_time() to check against the plan type instead of just the time
+        # if self._get_plan_time() is None or self._get_plan_time() <= 0:
+        #     self._set_status("Invalid plan time", error=True)
+        #     return
 
         queue_item = {
             "item_type": "plan",
