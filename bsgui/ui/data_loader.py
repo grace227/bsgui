@@ -363,6 +363,7 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
 
     def _refresh_recon_directory(self) -> None:
         self._recon_combo.blockSignals(True)
+        self._refresh_roi_directory()
         self._recon_combo.clear()
         self._iteration_combo.clear()
 

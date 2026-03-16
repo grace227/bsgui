@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -355,6 +357,24 @@ class PlanEditorWidget(QWidget):
         except (TypeError, ValueError):
             return None
 
+    @staticmethod
+    def _coerce_parameter_value(parameter: PlanParameter, value_text: str) -> object:
+        type_name = parameter.inferred_type().lower() if hasattr(parameter, "inferred_type") else (parameter.type_name or "str").lower()
+        text = value_text.strip()
+        default_value = getattr(parameter, "default", None)
+        has_container_default = isinstance(default_value, (list, tuple, dict, set))
+
+        # Parse structured literals before fallback coercion so queue payloads
+        # preserve container types instead of being submitted as strings.
+        if has_container_default or any(token in type_name for token in ("list", "tuple", "dict", "set", "sequence", "mapping")):
+            for parser in (json.loads, ast.literal_eval):
+                try:
+                    return parser(text)
+                except Exception:
+                    continue
+
+        return parameter.coerce(value_text)
+
 
     def _apply_roi_to_parameters(self, roi: Mapping[str, object]) -> None:
         if not self._parameter_rows or not self._roi_key_map:
@@ -419,7 +439,7 @@ class PlanEditorWidget(QWidget):
             if checkbox.isChecked():
                 value_text = line_edit.text()
                 try:
-                    value = parameter.coerce(value_text)
+                    value = self._coerce_parameter_value(parameter, value_text)
                     plan_item["kwargs"][name] = value
                 except (ValueError, TypeError):
                     self._set_status(
@@ -454,7 +474,7 @@ class PlanEditorWidget(QWidget):
             if checkbox.isChecked():
                 value_text = line_edit.text()
                 try:
-                    value = parameter.coerce(value_text)
+                    value = self._coerce_parameter_value(parameter, value_text)
                     queue_item['kwargs'][name] = value
                 except (ValueError, TypeError):
                     self._set_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})", error=True)
