@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple, List
 
 import numpy as np
+import tifffile
 
 DataLoader = Callable[[Path], Mapping[str, Any]]
 
@@ -61,11 +62,15 @@ class DataVisualizationController:
             return ("*.dat",)
         return tuple(str(pattern) for pattern in patterns)
 
-    def load(self, path: Path, load_type: str = "xrf"):
+    def load(self, path: Path, load_type: str = "xrf", mda_path: str = None):
         """Load the file through the configured loader and cache the result."""
-
         resolved = Path(path)
-        loaded = dict(self._loader(resolved))
+        if load_type == 'xrf':
+            loaded = dict(self._loader(resolved))
+        elif load_type == 'ptycho':
+            resolved_mda_path = Path(mda_path)
+            loaded = dict(self._loader(resolved, resolved_mda_path))
+
         self._update_data(loaded, load_type)
         self._last_path = resolved
 
@@ -86,6 +91,14 @@ class DataVisualizationController:
             elif scaler_names is None:
                 self.elms = ch_names
                 self.elms_data = xrf_data
+
+        elif load_type == "ptycho":
+            x_val = get_item(data, "x_val")
+            y_val = get_item(data, "y_val")
+            data = get_item(data, "data")
+            data = np.expand_dims(data, axis=0)
+            self.elms =['ptycho']
+            self.elms_data = data
 
 
         self.x_val = x_val

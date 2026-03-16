@@ -76,6 +76,7 @@ class DataVisualizationWidget(QWidget):
         title = payload["metadata"].get("title") if payload["metadata"] else None
         xlabel = payload["metadata"].get("xlabel", "X")
         ylabel = payload["metadata"].get("ylabel", "Y")
+        colormap = payload['metadata'].get('color_map', 'inferno')
 
         if any([xval is None, yval is None, zval is None]):
             self.show_message("Dataset missing 'x' and 'y'")
@@ -84,7 +85,7 @@ class DataVisualizationWidget(QWidget):
                 title = source_path.name
             elif not title:
                 title = "Dataset"
-            self._canvas.imshow(xval, yval, zval, title=title, xlabel=xlabel, ylabel=ylabel)
+            self._canvas.imshow(xval, yval, zval, title=title, xlabel=xlabel, ylabel=ylabel, color_map = colormap)
             self._reset_toolbar()
 
         self.datasetChanged.emit(payload)

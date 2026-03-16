@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pathlib
 from typing import List, Mapping, Optional, Sequence, TYPE_CHECKING
+import re
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QPushButton, QFileDialog, QWidget
@@ -245,6 +246,7 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         super().__init__(parent=parent)
         self._qserver_controller = qserver_controller
         self._current_folder: Optional[pathlib.Path] = None
+        self._mda_folder: Optional[pathlib.Path] = None
         self._preset_iteration_files = list(iteration_files or [])
         self._initial_folder = initial_folder
 
@@ -252,21 +254,25 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         self._folder_button.clicked.connect(self._choose_folder)
         self._folder_label = QLabel("–")
 
+        self._mda_button = QPushButton("MDA Folder")
+        self._mda_button.clicked.connect(self._choose_mda_folder)
+        self._mda_label = QLabel("–")
+
         self._scan_label = QLabel("Scan Number:")
         self._scan_combo = QComboBox()
-        self._scan_combo.currentIndexChanged.connect(self._refresh_recon_directory)
+        self._scan_combo.currentIndexChanged.connect(self._refresh_roi_directory)
 
         self._roi_label = QLabel("ROI Type (optional):")
         self._roi_combo = QComboBox()
         if roi_types:
             self._roi_combo.addItems(list(roi_types))
-        self._roi_combo.currentIndexChanged.connect(self._emit_selection)
+        self._roi_combo.currentIndexChanged.connect(self._refresh_recon_directory)
 
         self._recon_label = QLabel("Recon Method:")
         self._recon_combo = QComboBox()
         if recon_methods:
             self._recon_combo.addItems(list(recon_methods))
-        self._recon_combo.currentIndexChanged.connect(self._emit_selection)
+        self._recon_combo.currentIndexChanged.connect(self._refresh_iteration_files)
 
         self._iteration_label = QLabel("# Iterations:")
         self._iteration_combo = QComboBox()
@@ -274,17 +280,20 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
             self._iteration_combo.addItems(self._preset_iteration_files)
         self._iteration_combo.currentIndexChanged.connect(self._emit_selection)
 
+
         layout = QGridLayout(self)
-        layout.addWidget(self._folder_button, 0, 0)
-        layout.addWidget(self._folder_label, 0, 1, 1, 3)
-        layout.addWidget(self._scan_label, 1, 0)
-        layout.addWidget(self._scan_combo, 1, 1, 1, 3)
-        layout.addWidget(self._roi_label, 2, 0)
-        layout.addWidget(self._roi_combo, 2, 1, 1, 3)
-        layout.addWidget(self._recon_label, 3, 0)
-        layout.addWidget(self._recon_combo, 3, 1, 1, 3)
-        layout.addWidget(self._iteration_label, 4, 0)
-        layout.addWidget(self._iteration_combo, 4, 1, 1, 3)
+        layout.addWidget(self._mda_button, 0, 0)
+        layout.addWidget(self._mda_label, 0, 1, 1, 3)
+        layout.addWidget(self._folder_button, 1, 0)
+        layout.addWidget(self._folder_label, 1, 1, 1, 3)
+        layout.addWidget(self._scan_label, 2, 0)
+        layout.addWidget(self._scan_combo, 2, 1, 1, 3)
+        layout.addWidget(self._roi_label, 3, 0)
+        layout.addWidget(self._roi_combo, 3, 1, 1, 3)
+        layout.addWidget(self._recon_label, 4, 0)
+        layout.addWidget(self._recon_combo, 4, 1, 1, 3)
+        layout.addWidget(self._iteration_label, 5, 0)
+        layout.addWidget(self._iteration_combo, 5, 1, 1, 3)
         layout.setColumnStretch(1, 1)
 
     def initialize(self) -> None:
@@ -311,23 +320,73 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         if folder:
             self._set_folder(pathlib.Path(folder))
 
+    def _choose_mda_folder(self) -> None:
+        initial_dir = self._resolve_dialog_directory()
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select MDA Folder",
+            str(initial_dir) if initial_dir is not None else "",
+        )
+        if folder:
+            self._set_mda_folder(pathlib.Path(folder))
+
     def _resolve_dialog_directory(self) -> Optional[pathlib.Path]:
         controller = self._qserver_controller
         if controller is not None:
-            path = controller.get_save_data_path()
+            # path = controller.get_save_data_path()
+            path = '/net/micdata/data1/2ide/2026-1/ptycho-Ca'
             return pathlib.Path(path) if path else None
 
+ 
     def _set_folder(self, folder: pathlib.Path) -> None:
         self._current_folder = folder
         self._folder_label.setText(str(folder))
         self._ensure_controller().set_search_paths([folder])
         self._refresh_scan_numbers()
-        # self._update_element_options(folder)
-        # self._refresh_files()
+        self._refresh_roi_directory()
+
+    def _set_mda_folder(self, folder: pathlib.Path) -> None:
+        self._mda_folder = folder
+        self._mda_label.setText(str(folder))
 
     def _collect_folders(self, folder: pathlib.Path) -> List[pathlib.Path]:
         subfolders = [d for d in folder.iterdir() if d.is_dir()]
         return subfolders
+
+    @staticmethod
+    def _path_contains_ml_recon(path: pathlib.Path) -> bool:
+        return "ML_recon" in path.parts
+
+    def _selected_scan_path(self) -> Optional[pathlib.Path]:
+        path = self._scan_combo.currentData()
+        return path if isinstance(path, pathlib.Path) else None
+
+    def _selected_scan_number(self) -> Optional[int]:
+        data = self._scan_combo.currentData()
+        if isinstance(data, pathlib.Path):
+            scan_num_str = data.name
+            scan_num = re.search(r'\d+', scan_num_str)
+            if scan_num:
+                return int(scan_num.group(0))
+        return None
+
+    def _get_mda_path(self) -> Optional[pathlib.Path]:
+        scan_number = self._selected_scan_number()
+        if scan_number is None:
+            return None
+        folder = self._mda_folder
+        if folder is None or not folder.exists():
+            return None
+        return folder / f"2xfm_{scan_number:04d}.mda"
+
+    def _selected_roi_path(self) -> Optional[pathlib.Path]:
+        path = self._roi_combo.currentData()
+        return path if isinstance(path, pathlib.Path) else None
+
+    def _selected_recon_path(self) -> Optional[pathlib.Path]:
+        path = self._recon_combo.currentData()
+        return path if isinstance(path, pathlib.Path) else None
+
 
     def _refresh_scan_numbers(self) -> None:
         self._scan_combo.blockSignals(True)
@@ -343,67 +402,76 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
                 if path.name != 'analysis':
                     self._scan_combo.addItem(path.name, path)
         self._scan_combo.blockSignals(False)
+        if self._scan_combo.count() > 0:
+            self._scan_combo.setCurrentIndex(0)
 
     def _refresh_roi_directory(self) -> None:
         self._roi_combo.blockSignals(True)
         self._roi_combo.clear()
         self._recon_combo.clear()
         self._iteration_combo.clear()
+        self._roi_combo.setEnabled(False)
 
-        selected_scans_path = self._current_folder / self._scan_combo.currentData()
+        selected_scan_path = self._selected_scan_path()
+        if selected_scan_path is None or not selected_scan_path.exists():
+            self._roi_combo.blockSignals(False)
+            return
 
-        if selected_scans_path.exists() and selected_scans_path.match("**/ML_recon/**"):
+        if self._path_contains_ml_recon(selected_scan_path):
             self.ptychirecon_dir_selected = False
-            show_type = "O_phase_roi"
-            roi_folders = self._collect_folders(selected_scans_path)
+            roi_folders = self._collect_folders(selected_scan_path)
             for path in roi_folders:
                 self._roi_combo.addItem(path.name, path)
+            self._roi_combo.setEnabled(self._roi_combo.count() > 0)
+        else:
+            self.ptychirecon_dir_selected = True
+
+        self._roi_combo.blockSignals(False)
+        if self._roi_combo.count() > 0:
             self._roi_combo.setCurrentIndex(0)
-            self.roi_combo.blockSignals(False)
+            self._refresh_recon_directory()
+        else:
+            self._refresh_recon_directory()
 
     def _refresh_recon_directory(self) -> None:
         self._recon_combo.blockSignals(True)
-        self._refresh_roi_directory()
         self._recon_combo.clear()
         self._iteration_combo.clear()
+        selected_scan_path = self._selected_scan_path()
+        selected_roi_path = self._selected_roi_path()
 
-        selected_roi_path = self._current_folder / self._roi_combo.currentData()
+        base_path = selected_roi_path if selected_roi_path is not None else selected_scan_path
+        if base_path is None or not base_path.exists():
+            self._recon_combo.blockSignals(False)
+            return
 
-        if selected_roi_path.exists() and selected_roi_path.match("**/ML_recon/**"):
-            self.ptychirecon_dir_selected = True
-            show_type = "object_ph"
-            recon_folders = self._collect_folders(selected_roi_path)
-            for path in recon_folders:
-                self._recon_combo.addItem(path.name, path)
+        recon_folders = self._collect_folders(base_path)
+        for path in recon_folders:
+            self._recon_combo.addItem(path.name, path)
+
+        self.ptychirecon_dir_selected = not self._path_contains_ml_recon(base_path)
+        self._recon_combo.blockSignals(False)
+        if self._recon_combo.count() > 0:
             self._recon_combo.setCurrentIndex(0)
-            self.recon_combo.blockSignals(False)
-
-
-            
-        # else:
-        #     # This considers recon by Ptychi
-        #     self.ptychirecon_dir_selected = True
-        #     recon_methods = found_folders
-        #     show_type = "object_ph"
-
-    
-    # def _choose_folder(self) -> None:
-    #     folder = QFileDialog.getExistingDirectory(self, "Select Ptychography Folder")
-    #     if folder:
-    #         self._set_folder(pathlib.Path(folder))
-
-    # def _set_folder(self, folder: pathlib.Path) -> None:
-    #     self._current_folder = folder
-    #     self._folder_label.setText(str(folder))
-    #     self._ensure_controller().set_search_paths([folder])
-    #     self._refresh_iteration_files()
+            self._refresh_iteration_files()
+        else:
+            self._refresh_iteration_files()
 
     def _refresh_iteration_files(self) -> None:
         self._iteration_combo.blockSignals(True)
         self._iteration_combo.clear()
-        folder = self._current_folder
+
+        folder = self._selected_recon_path()
+        if folder is not None:
+            subfolder = "object_ph" if self.ptychirecon_dir_selected else "O_phase_roi"
+            folder = folder / subfolder
+        else:
+            folder = self._selected_roi_path()
+        if folder is None:
+            folder = self._selected_scan_path()
+
         if folder and folder.exists():
-            for path in sorted(folder.glob("*.tif")):
+            for path in sorted(folder.glob("*.tif*")):
                 self._iteration_combo.addItem(path.name, path)
         elif self._preset_iteration_files:
             for name in self._preset_iteration_files:
@@ -426,14 +494,23 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         index = self._iteration_combo.currentIndex()
         if index < 0:
             return
-        path = self._iteration_combo.itemData(index)
-        if isinstance(path, pathlib.Path) and path.exists():
+        tiff_path = self._iteration_combo.itemData(index)
+        mda_path = self._get_mda_path()
+
+        print(f"Loading data: {tiff_path}, {mda_path}")
+
+        try:
+            self._controller.load(tiff_path, load_type="ptycho", mda_path=mda_path)
+        except Exception as e:
+            print(f"Error loading data: {e}")
+            return
+
+        if isinstance(tiff_path, pathlib.Path) and tiff_path.exists():
             metadata = {
-                "scan": self._scan_combo.currentText(),
-                "roi": self._roi_combo.currentText(),
-                "recon_method": self._recon_combo.currentText(),
-                "title": f"{self._scan_combo.currentText()} – {path.name}",
-                "xlabel": "Pixel",
-                "ylabel": "Value",
+                "element": 'ptycho',
+                "title": f"{tiff_path.name}",
+                "xlabel": "Sample-X",
+                "ylabel": "Sample-Y",
+                'color_map': 'gray',
             }
-            self.selectionChanged.emit(path, metadata)
+            self.selectionChanged.emit(tiff_path, metadata)

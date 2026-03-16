@@ -30,8 +30,9 @@ tabs:
             - Total_Fluores
         ptycho:
           enabled: true
+          loader_path: "mic_vis.common.load_ptycho:load_ptycho_data"
           search_paths:
-            - /net/midata/data1/2ide/2026-1/ptycho-Ca
+            - ./data/img.dat
       plan_editor:
         enabled: true
         kinds:
