@@ -1,7 +1,8 @@
 """User interface components for the beamline UI."""
 
+from .base_loader import BaseLoaderWidget
 from .scan_setup import DataVisualizationWidget, DataViewerPane
-from .data_loader import BaseLoaderWidget, XRFLoaderWidget, PtychographyLoaderWidget
+from .ptychography_loader import PtychographyLoaderWidget
 from .plan_editor import PlanEditorWidget, PlanDefinition, PlanParameter
 from .plot_canvas import PlotCanvasWidget
 from .queue_monitor import QueueMonitorWidget
@@ -9,6 +10,7 @@ from .qserver_status import QueueServerStatusWidget
 from .qserver_console import QServerConsoleWidget
 from .canvas_toolbar import CustomToolbar
 from .status_bus import get_status_bus, emit_status
+from .xrf_loader import XRFLoaderWidget
 
 __all__ = [
     "BaseLoaderWidget",

@@ -14,7 +14,8 @@ from ..core import DataVisualizationController, default_loader
 from ..core.qserver_api import QServerAPI
 from ..core.qserver_controller import QServerController
 from ..ui.scan_setup import DataViewerPane
-from ..ui.data_loader import PtychographyLoaderWidget, XRFLoaderWidget
+from ..ui.ptychography_loader import PtychographyLoaderWidget
+from ..ui.xrf_loader import XRFLoaderWidget
 from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
 from ..ui.qserver_status import QueueServerStatusWidget
 from ..ui.qserver_console import QServerConsoleWidget

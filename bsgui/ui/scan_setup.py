@@ -9,7 +9,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QGridLayout, QVBoxLayout, QWidget
 
 from ..core.data_controller import DataVisualizationController
-from .data_loader import BaseLoaderWidget
+from .base_loader import BaseLoaderWidget
 from .plot_canvas import PlotCanvasWidget
 from .canvas_toolbar import CustomToolbar
 

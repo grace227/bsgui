@@ -31,6 +31,7 @@ from .qtable_controls import (
     export_qtable_to_csv,
 )
 from .qserver_planning import QServerPlanningWidget
+from .scan_monitor import ScanMonitorWidget
 from .status_bus import emit_status
 
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -105,10 +106,7 @@ class QueueMonitorWidget(QWidget):
         )
         self._queue_table.itemChanged.connect(self._handle_item_changed)
 
-        self._active_label = QLabel("Idle")
-        self._progress = QProgressBar()
-        self._progress.setRange(0, 100)
-        self._progress.setValue(0)
+        self._scan_monitor = ScanMonitorWidget()
 
         self._completed_text_color = QColor("#5c5c5c")
         self._running_item_color = QColor("#2e7d32")
@@ -172,12 +170,9 @@ class QueueMonitorWidget(QWidget):
         self._status_label = QLabel("")
         self._status_label.setObjectName("queueStatusLabel")
         self._status_label.setWordWrap(True)
-        layout.addWidget(self._status_label)
-        layout.addWidget(QLabel("Active Plan"))
-        layout.addWidget(self._active_label)
-        layout.addWidget(self._progress)
+        layout.addWidget(self._scan_monitor)
         self._planning_widget = QServerPlanningWidget(controller=controller, layout=layout)
-        # layout.addWidget(self._planning_widget)
+
 
         if controller is not None:
             self.set_controller(controller)
@@ -202,6 +197,7 @@ class QueueMonitorWidget(QWidget):
             self._qtable_controls.set_controller(controller)
         if hasattr(self, "_planning_widget"):
             self._planning_widget.set_controller(controller)
+        self._scan_monitor.set_controller(controller)
         controller.queueUpdated.connect(self._handle_queue_updated)
         snapshot = controller.fetch_snapshot()
         if snapshot:

@@ -1,12 +1,43 @@
 from __future__ import annotations
 
 import ast
+from collections import deque
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
 from bluesky_queueserver_api.zmq import REManagerAPI
 from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
 import time
+
+
+class _ConsoleMonitorBuffer:
+    def __init__(self, *, max_messages: int = 2000) -> None:
+        self._buffer = deque(maxlen=max(1, max_messages))
+
+    def append(self, message: Mapping[str, Any] | str) -> None:
+        if isinstance(message, Mapping):
+            text = ""
+            for key in ("text", "msg", "message"):
+                value = message.get(key)
+                if value:
+                    text = str(value)
+                    break
+        else:
+            text = str(message)
+        if text:
+            self._buffer.append(text)
+
+    def clear(self) -> None:
+        self._buffer.clear()
+
+    def clear_matching(self, patterns: list[str] | tuple[str, ...]) -> None:
+        if not patterns:
+            return
+        retained = [entry for entry in self._buffer if not any(pattern in entry for pattern in patterns)]
+        self._buffer = deque(retained, maxlen=self._buffer.maxlen)
+
+    def text(self) -> str:
+        return "".join(self._buffer)
 
 
 class QServerAPI(REManagerAPI):
@@ -19,6 +50,11 @@ class QServerAPI(REManagerAPI):
         super().__init__(*args, **kwargs)
         self._save_data_path = None
         self._console_output = ReceiveConsoleOutput(zmq_subscribe_addr=kwargs.get("zmq_info_addr", None))
+        self._console_monitor = _ConsoleMonitorBuffer()
+
+    @property
+    def console_monitor(self) -> _ConsoleMonitorBuffer:
+        return self._console_monitor
 
     def get_status(self, selected_keys: Optional[List[str]] = None) -> Dict[str, Any]:
         try:
@@ -314,9 +350,8 @@ class QServerAPI(REManagerAPI):
         if not message:
             return None
         if isinstance(message, dict):
+            self._console_monitor.append(message)
             return message
-        print(f"message: {message}")
+        self._console_monitor.append(message)
         return {"text": message}
-
-
 
