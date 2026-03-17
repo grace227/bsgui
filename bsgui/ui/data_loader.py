@@ -7,14 +7,55 @@ from typing import List, Mapping, Optional, Sequence, TYPE_CHECKING
 import re
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QPushButton, QFileDialog, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QLabel,
+    QPushButton,
+    QWidget,
+    QListView,
+)
 
 from ..core.data_controller import DataVisualizationController
 if TYPE_CHECKING:
     from ..core.qserver_controller import QServerController
 
 
-class RefreshingComboBox(QComboBox):
+class PopupListViewComboBox(QComboBox):
+    def __init__(self, *, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        popup_view = QListView(self)
+        popup_view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        popup_view.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        popup_view.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setView(popup_view)
+
+    def showPopup(self) -> None:  # pragma: no cover - UI hook
+        super().showPopup()
+        self._resize_popup_height()
+
+    def _resize_popup_height(self) -> None:
+        rows = min(max(self.count(), 1), self.maxVisibleItems())
+        view = self.view()
+        row_height = view.sizeHintForRow(0)
+        if row_height <= 0:
+            row_height = view.fontMetrics().height() + 4
+
+        frame_height = view.frameWidth() * 2
+        margins = view.contentsMargins().top() + view.contentsMargins().bottom()
+        scrollbar_height = (
+            view.horizontalScrollBar().sizeHint().height()
+            if view.horizontalScrollBar().isVisible()
+            else 0
+        )
+        popup_height = rows * row_height + frame_height + margins + scrollbar_height
+        view.window().setFixedHeight(popup_height)
+
+
+class RefreshingComboBox(PopupListViewComboBox):
     aboutToShowPopup = Signal()
 
     def showPopup(self) -> None:  # pragma: no cover - UI hook
@@ -26,6 +67,7 @@ class BaseLoaderWidget(QWidget):
     """Base class for loader widgets that emit selections for plotting."""
 
     selectionChanged = Signal(pathlib.Path, dict)
+    _combo_box_max_visible_items = 30
 
     def __init__(self, *, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -42,6 +84,10 @@ class BaseLoaderWidget(QWidget):
         if self._controller is None:
             raise RuntimeError("Controller has not been set on loader widget")
         return self._controller
+
+    def _configure_combo_box(self, combo: QComboBox) -> QComboBox:
+        combo.setMaxVisibleItems(self._combo_box_max_visible_items)
+        return combo
 
 
 class XRFLoaderWidget(BaseLoaderWidget):
@@ -67,12 +113,12 @@ class XRFLoaderWidget(BaseLoaderWidget):
         self._folder_label = QLabel("–")
 
         self._file_label = QLabel("XRF Files:")
-        self._file_combo = RefreshingComboBox()
+        self._file_combo = self._configure_combo_box(RefreshingComboBox())
         self._file_combo.currentIndexChanged.connect(self._update_element_options)
         self._file_combo.aboutToShowPopup.connect(self._refresh_files_dropdown)
 
         self._element_label = QLabel("Elements:")
-        self._element_combo = QComboBox()
+        self._element_combo = self._configure_combo_box(PopupListViewComboBox())
         self._element_combo.currentIndexChanged.connect(self._emit_selection)
 
         layout = QGridLayout(self)
@@ -238,6 +284,7 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         scan_numbers: Optional[Sequence[str]] = None,
         recon_methods: Optional[Sequence[str]] = None,
         iteration_files: Optional[Sequence[str]] = None,
+        mda_file_patterns: Optional[Sequence[str]] = None,
         initial_folder: Optional[pathlib.Path] = None,
         ptychi_recon: Optional[bool] = True,
         qserver_controller: Optional["QServerController"] = None,
@@ -247,6 +294,7 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         self._qserver_controller = qserver_controller
         self._current_folder: Optional[pathlib.Path] = None
         self._mda_folder: Optional[pathlib.Path] = None
+        self._mda_file_patterns = list(mda_file_patterns or ["2xfm_{scan_number:04d}.mda"])
         self._preset_iteration_files = list(iteration_files or [])
         self._initial_folder = initial_folder
 
@@ -259,23 +307,23 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         self._mda_label = QLabel("–")
 
         self._scan_label = QLabel("Scan Number:")
-        self._scan_combo = QComboBox()
+        self._scan_combo = self._configure_combo_box(PopupListViewComboBox())
         self._scan_combo.currentIndexChanged.connect(self._refresh_roi_directory)
 
         self._roi_label = QLabel("ROI Type (optional):")
-        self._roi_combo = QComboBox()
+        self._roi_combo = self._configure_combo_box(PopupListViewComboBox())
         if roi_types:
             self._roi_combo.addItems(list(roi_types))
         self._roi_combo.currentIndexChanged.connect(self._refresh_recon_directory)
 
         self._recon_label = QLabel("Recon Method:")
-        self._recon_combo = QComboBox()
+        self._recon_combo = self._configure_combo_box(PopupListViewComboBox())
         if recon_methods:
             self._recon_combo.addItems(list(recon_methods))
         self._recon_combo.currentIndexChanged.connect(self._refresh_iteration_files)
 
         self._iteration_label = QLabel("# Iterations:")
-        self._iteration_combo = QComboBox()
+        self._iteration_combo = self._configure_combo_box(PopupListViewComboBox())
         if self._preset_iteration_files:
             self._iteration_combo.addItems(self._preset_iteration_files)
         self._iteration_combo.currentIndexChanged.connect(self._emit_selection)
@@ -333,8 +381,8 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
     def _resolve_dialog_directory(self) -> Optional[pathlib.Path]:
         controller = self._qserver_controller
         if controller is not None:
-            # path = controller.get_save_data_path()
-            path = '/net/micdata/data1/2ide/2026-1/ptycho-Ca'
+            path = controller.get_save_data_path()
+            # path = '/net/micdata/data1/2ide/2026-1/ptycho-Ca'
             return pathlib.Path(path) if path else None
 
  
@@ -357,6 +405,13 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
     def _path_contains_ml_recon(path: pathlib.Path) -> bool:
         return "ML_recon" in path.parts
 
+    @staticmethod
+    def _numeric_sort_key(path: pathlib.Path) -> tuple[int, str]:
+        match = re.search(r"\d+", path.name)
+        if match:
+            return int(match.group(0)), path.name
+        return -1, path.name
+
     def _selected_scan_path(self) -> Optional[pathlib.Path]:
         path = self._scan_combo.currentData()
         return path if isinstance(path, pathlib.Path) else None
@@ -377,7 +432,13 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
         folder = self._mda_folder
         if folder is None or not folder.exists():
             return None
-        return folder / f"2xfm_{scan_number:04d}.mda"
+
+        for pattern in self._mda_file_patterns:
+            candidate = folder / pattern.format(scan_number=scan_number)
+            if candidate.exists():
+                return candidate
+
+        return folder / self._mda_file_patterns[0].format(scan_number=scan_number)
 
     def _selected_roi_path(self) -> Optional[pathlib.Path]:
         path = self._roi_combo.currentData()
@@ -471,7 +532,7 @@ class PtychographyLoaderWidget(BaseLoaderWidget):
             folder = self._selected_scan_path()
 
         if folder and folder.exists():
-            for path in sorted(folder.glob("*.tif*")):
+            for path in sorted(folder.glob("*.tif*"), key=self._numeric_sort_key):
                 self._iteration_combo.addItem(path.name, path)
         elif self._preset_iteration_files:
             for name in self._preset_iteration_files:

@@ -210,6 +210,7 @@ def register_default_widgets(
                 roi_types=ptycho_cfg.get("roi_types"),
                 recon_methods=ptycho_cfg.get("recon_methods"),
                 iteration_files=ptycho_cfg.get("iteration_files"),
+                mda_file_patterns=ptycho_cfg.get("mda_file_patterns"),
                 initial_folder=search_paths[0] if search_paths else None,
                 qserver_controller=qserver_controller,
             )

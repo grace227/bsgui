@@ -33,6 +33,8 @@ tabs:
           loader_path: "mic_vis.common.load_ptycho:load_ptycho_data"
           search_paths:
             - ./data/img.dat
+          mda_file_patterns:
+            - "2xfm_{scan_number:04d}.mda"
       plan_editor:
         enabled: true
         kinds:
