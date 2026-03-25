@@ -147,3 +147,4 @@ Thumbs.db
 .loglogin
 bs_slack_bot/run.sh
 bs_slack_bot/s2ide_run.sh
+bs_slack_bot/s2idd_run.sh

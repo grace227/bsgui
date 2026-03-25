@@ -14,6 +14,12 @@ class CustomToolbar(NavigationToolbar):
         super().__init__(canvas, parent)
         self.parent = parent
 
+        self._invert_y_enabled = False
+
+        self.invertYAction = QAction("Invert Y", self)
+        self.invertYAction.setCheckable(True)
+        self.addAction(self.invertYAction)
+
         # Configure the ROI actions
         self.drawRectangleAction = QAction("Add ROI", self)
         self.drawRectangleAction.setCheckable(True)
@@ -30,6 +36,7 @@ class CustomToolbar(NavigationToolbar):
         self.addAction(self.removeRectangleAction)
 
         # Connect the action trigger to enable/disable rectangle drawing
+        self.invertYAction.triggered.connect(self.toggle_invert_y)
         self.drawRectangleAction.triggered.connect(self.toggle_rectangle_drawing)
         self.removeRectangleAction.triggered.connect(self.toggle_rectangle_remove)
         self.selectPointAction.triggered.connect(self.toggle_point_selection)
@@ -60,6 +67,16 @@ class CustomToolbar(NavigationToolbar):
         self.active_line = None
         self.active_point = None
         self.points = []
+
+    def toggle_invert_y(self):
+        self._invert_y_enabled = self.invertYAction.isChecked()
+        self.sync_view_state()
+
+    def sync_view_state(self):
+        axes = self.canvas.figure.gca()
+        if axes.yaxis_inverted() != self._invert_y_enabled:
+            axes.invert_yaxis()
+        self.canvas.draw_idle()
 
     def on_mouse_press(self, event):
         if self.is_drawing and event.button == 1:

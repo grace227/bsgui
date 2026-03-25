@@ -86,6 +86,7 @@ class DataVisualizationWidget(QWidget):
             elif not title:
                 title = "Dataset"
             self._canvas.imshow(xval, yval, zval, title=title, xlabel=xlabel, ylabel=ylabel, color_map = colormap)
+            self._toolbar.sync_view_state()
             self._reset_toolbar()
 
         self.datasetChanged.emit(payload)
