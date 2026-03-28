@@ -297,6 +297,16 @@ def register_default_widgets(
             if isinstance(plan_editor_cfg.get("roi_key_map"), Mapping)
             else None
         )
+        sync_buttons = (
+            plan_editor_cfg.get("sync_buttons")
+            if isinstance(plan_editor_cfg.get("sync_buttons"), Sequence)
+            else None
+        )
+        sync_inputs = (
+            plan_editor_cfg.get("sync_inputs")
+            if isinstance(plan_editor_cfg.get("sync_inputs"), Sequence)
+            else None
+        )
 
         def make_plan_editor() -> tuple[QWidget, str]:
             controller = ensure_controller()
@@ -305,6 +315,8 @@ def register_default_widgets(
                 controller=controller,
                 kind_overrides=kind_parameters,
                 roi_key_map=roi_key_map,
+                sync_buttons=sync_buttons,
+                sync_inputs=sync_inputs,
             )
             if isinstance(plans_cfg, list):
                 definitions = _parse_plan_definitions(plans_cfg)

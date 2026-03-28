@@ -276,6 +276,25 @@ class QServerController(QObject):
             _logger.exception("Error fetching save data path")
             return None
 
+    def execute_function(
+        self,
+        function_name: str,
+        *,
+        call_kwargs: Optional[Mapping[str, Any]] = None,
+        user_group: str = "root",
+        timeout: float = 5.0,
+    ) -> Any:
+        try:
+            return self._api.execute_function(
+                function_name,
+                call_kwargs=call_kwargs,
+                user_group=user_group,
+                timeout=timeout,
+            )
+        except Exception:
+            _logger.exception("Error executing qserver function '%s'", function_name)
+            return None
+
     def get_allowed_plan_definitions(self, *, kind: str = "plan") -> List[PlanDefinition]:
         plans = self.get_allowed_plans(normalize=True)
         if self._allowed_plan_filter:

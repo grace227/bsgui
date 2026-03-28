@@ -44,6 +44,7 @@ def resolve_config_path(
         return argument
     if beamline:
         candidate = pathlib.Path("bsgui/config") / f"{beamline}_widgets.yaml"
+        print(candidate)
         if candidate.exists():
             return candidate
     default_path = pathlib.Path("bsgui/config/widgets.yaml")
@@ -192,6 +193,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
 
 def main(argv: List[str]) -> int:
     args = parse_args(argv)
+    print(args.beamline)
     config_path = resolve_config_path(args.config, args.beamline)
     config = load_config(config_path) if config_path else {}
 

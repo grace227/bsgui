@@ -198,27 +198,61 @@ class QServerAPI(REManagerAPI):
         return success
 
     def get_save_data_path(self, *, timeout: float = 5.0) -> Optional[str]:
-        # The string "get_save_data_path" is the name of the function being imported from RE startup.py
-        func = BFunc("get_save_data_path")
+        return self.execute_function("get_save_data_path", timeout=timeout)
+
+    def execute_function(
+        self,
+        function_name: str,
+        *,
+        call_kwargs: Optional[Mapping[str, Any]] = None,
+        user_group: str = "root",
+        timeout: float = 5.0,
+    ) -> Any:
+        """Execute a qserver function and return its ``return_value``."""
+
+        func = BFunc(function_name, **dict(call_kwargs or {}))
         try:
-            reply = self.function_execute(func, user_group="root")
+            reply = self.function_execute(func, user_group=user_group)
             if not reply.get("success"):
-                print(f"QueueServer rejected get_save_data_path(): {reply.get('msg')}")
+                print(f"QueueServer rejected {function_name}(): {reply.get('msg')}")
                 return None
 
             task_uid = reply.get("task_uid")
             if not task_uid:
-                print(f"No task UID returned for get_save_data_path(): {reply}")
+                print(f"No task UID returned for {function_name}(): {reply}")
                 return None
 
             self.wait_for_completed_task(task_uid, timeout=timeout)
             result = self.task_result(task_uid=task_uid).get("result") or {}
             return result.get("return_value")
         except (self.WaitTimeoutError, self.WaitCancelError) as exc:
-            print(f"Timed out waiting for get_save_data_path(): {exc}")
+            print(f"Timed out waiting for {function_name}(): {exc}")
         except Exception as exc:  # pragma: no cover - network path
-            print(f"Error running get_save_data_path(): {exc}")
+            print(f"Error running {function_name}(): {exc}")
         return None
+
+    def syncXYZ(self, *, timeout: float = 5.0) -> Any:
+        return self.execute_function("syncXYZ", timeout=timeout)
+
+    def syncXYZ_transform(
+        self,
+        *,
+        x: object | None = None,
+        y: object | None = None,
+        z: object | None = None,
+        theta: object | None = None,
+        timeout: float = 5.0,
+    ) -> Any:
+        call_kwargs: Dict[str, Any] = {}
+        if x is not None:
+            call_kwargs["x"] = x
+        if y is not None:
+            call_kwargs["y"] = y
+        if z is not None:
+            call_kwargs["z"] = z
+        if theta is not None:
+            call_kwargs["theta"] = theta
+        return self.execute_function("syncXYZ_transform", call_kwargs=call_kwargs, timeout=timeout)
 
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:
@@ -354,4 +388,3 @@ class QServerAPI(REManagerAPI):
             return message
         self._console_monitor.append(message)
         return {"text": message}
-

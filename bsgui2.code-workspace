@@ -4,6 +4,12 @@
 			"path": "."
 		},
 		{
+			"path": "../bluesky-mic"
+		},
+		{
+			"path": "../guidev/bnpTools"
+		},
+		{
 			"path": "../mic-vis"
 		}
 	],
