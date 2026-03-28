@@ -297,6 +297,11 @@ def register_default_widgets(
             if isinstance(plan_editor_cfg.get("roi_key_map"), Mapping)
             else None
         )
+        roi_context_map = (
+            plan_editor_cfg.get("roi_context_map")
+            if isinstance(plan_editor_cfg.get("roi_context_map"), Mapping)
+            else None
+        )
         sync_buttons = (
             plan_editor_cfg.get("sync_buttons")
             if isinstance(plan_editor_cfg.get("sync_buttons"), Sequence)
@@ -315,6 +320,7 @@ def register_default_widgets(
                 controller=controller,
                 kind_overrides=kind_parameters,
                 roi_key_map=roi_key_map,
+                roi_context_map=roi_context_map,
                 sync_buttons=sync_buttons,
                 sync_inputs=sync_inputs,
             )
@@ -401,6 +407,7 @@ def register_default_widgets(
 
         for widget, _ in extra_widgets:
             if isinstance(widget, PlanEditorWidget):
+                pane.datasetChanged.connect(widget.handle_dataset_changed)
                 pane.canvasPointSelected.connect(widget.handle_point_drawn)
                 pane.roiDrawn.connect(widget.handle_roi_drawn)
                 plan_editor_widget = widget

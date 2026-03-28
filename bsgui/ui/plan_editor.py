@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import ast
-import json
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from PySide6.QtCore import Qt, Signal
@@ -12,7 +9,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,39 +20,25 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator
-from PySide6.QtCore import QRegularExpression
 from ..core.qserver_controller import PlanDefinition, PlanParameter
 from .qserver_planning import emit_plan_added
+from .plan_editor_extra import PlanEditorExtraPanel
+from .plan_editor_utils import (
+    DEFAULT_DISABLED_STYLE,
+    OVERHEAD_FACTOR,
+    ParameterRow,
+    apply_parameter_row_value,
+    build_type_validator,
+    coerce_parameter_value,
+    convert_extra_parameters,
+    format_default_label,
+    infer_parameter_type,
+    normalize_key_map,
+    normalize_string_map,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
     from ..core.qserver_controller import QServerController
-
-OVERHEAD_FACTOR = 3
-SYNC_VALUE_STYLE = "color: #2e7d32;"
-DEFAULT_DISABLED_STYLE = "color: #666666;"
-
-
-@dataclass(frozen=True)
-class SyncAction:
-    text: str
-    qserver_function: str
-    result_keys: tuple[str, ...] = ()
-    transform: Optional[Mapping[str, object]] = None
-    parameter_map: Optional[Mapping[str, str]] = None
-    input_map: Optional[Mapping[str, str]] = None
-    result_target: str = "parameters"
-    user_group: str = "root"
-    timeout: float = 5.0
-
-
-@dataclass(frozen=True)
-class SyncInputField:
-    name: str
-    label: str
-    editable: bool = False
-    type_name: str = "float"
-    placeholder: str = ""
 
 class PlanEditorWidget(QWidget):
     """Widget for browsing plan definitions and preparing submissions."""
@@ -70,6 +52,7 @@ class PlanEditorWidget(QWidget):
         kinds: Optional[Sequence[str]] = None,
         kind_overrides: Optional[Mapping[str, Iterable[dict]]] = None,
         roi_key_map: Optional[Mapping[str, object]] = None,
+        roi_context_map: Optional[Mapping[str, object]] = None,
         sync_buttons: Optional[Sequence[object]] = None,
         sync_inputs: Optional[Sequence[object]] = None,
         parent: Optional[QWidget] = None,
@@ -82,18 +65,26 @@ class PlanEditorWidget(QWidget):
         self._extra_parameters: Dict[str, List[PlanParameter]] = {}
         if isinstance(kind_overrides, Mapping):
             for kind in self._kinds:
-                self._extra_parameters[kind] = self._convert_extra_parameters(kind_overrides.get(kind, []))
+                self._extra_parameters[kind] = convert_extra_parameters(kind_overrides.get(kind, []))
         else:
             for kind in self._kinds:
                 self._extra_parameters[kind] = []
         self._selected_dataset: Dict[str, object] | None = None
-        self._parameter_rows: Dict[str, tuple[QCheckBox, QLineEdit, PlanParameter, object | None, str]] = {}
-        self._roi_key_map = self._normalize_key_map(roi_key_map)
-        self._sync_actions = self._normalize_sync_actions(sync_buttons)
-        self._sync_input_fields = self._normalize_sync_input_fields(sync_inputs)
-        self._sync_input_widgets: Dict[str, QLineEdit] = {}
+        self._selected_dataset_values: Dict[str, object] = {}
+        self._parameter_rows: Dict[str, ParameterRow] = {}
+        self._roi_key_map = normalize_key_map(roi_key_map)
+        self._roi_context_map = normalize_string_map(roi_context_map)
 
         self._tabs = QTabWidget()
+        self._extra_panel = PlanEditorExtraPanel(
+            controller=self._controller,
+            roi_key_map=self._roi_key_map,
+            sync_buttons=sync_buttons,
+            sync_inputs=sync_inputs,
+            parameter_rows_getter=lambda: self._parameter_rows,
+            apply_roi_callback=self._apply_roi_to_parameters,
+            set_status_callback=self._set_status,
+        )
         self._tabs.addTab(self._build_plan_editor_panel(), "Bluesky Plan")
 
         outer_layout = QVBoxLayout(self)
@@ -162,41 +153,12 @@ class PlanEditorWidget(QWidget):
 
         layout.addLayout(button_layout)
 
-        if self._sync_input_fields:
-            sync_input_layout = QGridLayout()
-            sync_input_layout.setHorizontalSpacing(6)
-            sync_input_layout.setVerticalSpacing(6)
-            fields_per_row = max(1, (len(self._sync_input_fields) + 1) // 2)
-            for index, field in enumerate(self._sync_input_fields):
-                row = index // fields_per_row
-                column = (index % fields_per_row) * 2
-                sync_input_layout.addWidget(QLabel(field.label), row, column)
-                line_edit = QLineEdit()
-                line_edit.setPlaceholderText(field.placeholder)
-                line_edit.setReadOnly(not field.editable)
-                if not field.editable:
-                    line_edit.setStyleSheet("color: #666666;")
-                validator = self._build_type_validator(field.type_name, line_edit)
-                if validator is not None:
-                    line_edit.setValidator(validator)
-                self._sync_input_widgets[field.name] = line_edit
-                sync_input_layout.addWidget(line_edit, row, column + 1)
-            layout.addLayout(sync_input_layout)
-
         self._status_label = QLabel("")
         self._status_label.setStyleSheet("color: #666666;")
 
-        if self._sync_actions:
-            sync_layout = QHBoxLayout()
-            sync_layout.addStretch(1)
-            sync_layout.setSpacing(6)
-            for action in self._sync_actions:
-                button = QPushButton(action.text)
-                button.clicked.connect(lambda _checked=False, action=action: self._handle_sync_action(action))
-                sync_layout.addWidget(button)
-            layout.addLayout(sync_layout)
-
         layout.addWidget(self._status_label)
+        if self._extra_panel.has_content():
+            layout.addWidget(self._extra_panel)
 
         return widget
 
@@ -205,13 +167,21 @@ class PlanEditorWidget(QWidget):
 
     def handle_point_drawn(self, point: Mapping[str, object]) -> None:
         """Record point coordinates emitted from the toolbar."""
-        self._apply_roi_to_parameters(point)
+        self._apply_roi_to_parameters(self._augment_roi_with_context(point))
         self._set_status("Point applied to plan parameters")
 
     def handle_roi_drawn(self, roi: Mapping[str, object]) -> None:
         """Receive ROI data emitted from the visualization toolbar."""
-        self._apply_roi_to_parameters(roi)
+        self._apply_roi_to_parameters(self._augment_roi_with_context(roi))
         self._set_status("ROI applied to plan parameters")
+
+    def handle_dataset_changed(self, payload: Mapping[str, object]) -> None:
+        self._selected_dataset = dict(payload)
+        dataset_values = payload.get("dataset_values")
+        if isinstance(dataset_values, Mapping):
+            self._selected_dataset_values = dict(dataset_values)
+        else:
+            self._selected_dataset_values = {}
 
     def handle_plans_update(self, worker_status: str) -> None:
         if worker_status == "closed" or worker_status == "":
@@ -303,7 +273,7 @@ class PlanEditorWidget(QWidget):
 
             default_value = parameter.default
             default_text = parameter.default_as_text()
-            default_label = self._format_default_label(default_text)
+            default_label = format_default_label(default_text)
 
             container = QWidget()
             layout = QHBoxLayout(container)
@@ -317,7 +287,7 @@ class PlanEditorWidget(QWidget):
             if parameter.description:
                 line_edit.setToolTip(parameter.description)
 
-            inferred_type = parameter.inferred_type().lower() if hasattr(parameter, "inferred_type") else (parameter.type_name or "str").lower()
+            inferred_type = infer_parameter_type(parameter)
             validator = self._build_validator(parameter, line_edit)
             if validator is not None:
                 line_edit.setValidator(validator)
@@ -351,124 +321,9 @@ class PlanEditorWidget(QWidget):
 
         self._update_eta_display()
 
-    @staticmethod
-    def _convert_extra_parameters(config: Any) -> List[PlanParameter]:
-        if isinstance(config, Mapping):
-            entries = config.get("parameters", [])
-        else:
-            entries = config
-        parameters: List[PlanParameter] = []
-        if not isinstance(entries, Iterable):
-            return parameters
-        for entry in entries:
-            if not isinstance(entry, Mapping):
-                continue
-            name = entry.get("name")
-            if not isinstance(name, str):
-                continue
-            parameters.append(
-                PlanParameter(
-                    name=name,
-                    default=entry.get("default"),
-                    type_name=entry.get("type_name"),
-                    required=bool(entry.get("required", False)),
-                    description=entry.get("description") if isinstance(entry.get("description"), str) else None,
-                )
-            )
-        return parameters
-
-    @staticmethod
-    def _normalize_sync_actions(config: Optional[Sequence[object]]) -> List[SyncAction]:
-        actions: List[SyncAction] = []
-        if not isinstance(config, Sequence) or isinstance(config, (str, bytes)):
-            return actions
-        for entry in config:
-            if not isinstance(entry, Mapping):
-                continue
-            text = entry.get("text")
-            function_name = entry.get("qserver_function")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            if not isinstance(function_name, str) or not function_name.strip():
-                continue
-            raw_result_keys = entry.get("result_keys")
-            result_keys: tuple[str, ...] = ()
-            if isinstance(raw_result_keys, Sequence) and not isinstance(raw_result_keys, (str, bytes)):
-                result_keys = tuple(str(item) for item in raw_result_keys if isinstance(item, str))
-            transform = entry.get("transform") if isinstance(entry.get("transform"), Mapping) else None
-            parameter_map = (
-                {str(key): str(value) for key, value in entry.get("parameter_map", {}).items()}
-                if isinstance(entry.get("parameter_map"), Mapping)
-                else None
-            )
-            input_map = (
-                {str(key): str(value) for key, value in entry.get("input_map", {}).items()}
-                if isinstance(entry.get("input_map"), Mapping)
-                else None
-            )
-            result_target = entry.get("result_target") if isinstance(entry.get("result_target"), str) else "parameters"
-            user_group = entry.get("user_group") if isinstance(entry.get("user_group"), str) else "root"
-            timeout = float(entry.get("timeout", 5.0))
-            actions.append(
-                SyncAction(
-                    text=text.strip(),
-                    qserver_function=function_name.strip(),
-                    result_keys=result_keys,
-                    transform=transform,
-                    parameter_map=parameter_map,
-                    input_map=input_map,
-                    result_target=result_target,
-                    user_group=user_group,
-                    timeout=timeout,
-                )
-            )
-        return actions
-
-    @staticmethod
-    def _normalize_sync_input_fields(config: Optional[Sequence[object]]) -> List[SyncInputField]:
-        fields: List[SyncInputField] = []
-        if not isinstance(config, Sequence) or isinstance(config, (str, bytes)):
-            return fields
-        for entry in config:
-            if not isinstance(entry, Mapping):
-                continue
-            name = entry.get("name")
-            if not isinstance(name, str) or not name.strip():
-                continue
-            label = entry.get("label") if isinstance(entry.get("label"), str) else name
-            type_name = entry.get("type_name") if isinstance(entry.get("type_name"), str) else "float"
-            placeholder = entry.get("placeholder") if isinstance(entry.get("placeholder"), str) else ""
-            fields.append(
-                SyncInputField(
-                    name=name.strip(),
-                    label=label.strip(),
-                    editable=bool(entry.get("editable", False)),
-                    type_name=type_name,
-                    placeholder=placeholder,
-                )
-            )
-        return fields
-
     def _build_validator(self, parameter: PlanParameter, line_edit: QLineEdit):
-        type_name = parameter.inferred_type().lower() if hasattr(parameter, 'inferred_type') else (parameter.type_name or 'str').lower()
-        return self._build_type_validator(type_name, line_edit)
-
-    @staticmethod
-    def _build_type_validator(type_name: str, line_edit: QLineEdit):
-        type_name = (type_name or "str").lower()
-        if type_name == 'int':
-            validator = QIntValidator(line_edit)
-            validator.setRange(-2147483648, 2147483647)
-            return validator
-        if type_name == 'float':
-            validator = QDoubleValidator(line_edit)
-            validator.setNotation(QDoubleValidator.StandardNotation)
-            validator.setDecimals(10)
-            return validator
-        if type_name == 'bool':
-            regex = QRegularExpression('^(?i)(true|false|1|0|yes|no|on|off|y|n)$')
-            return QRegularExpressionValidator(regex, line_edit)
-        return None
+        type_name = infer_parameter_type(parameter)
+        return build_type_validator(type_name, line_edit)
 
     def _update_eta_display(self) -> None:
         eta = self._get_plan_time()
@@ -477,7 +332,7 @@ class PlanEditorWidget(QWidget):
         else:
             self._set_status(f"Estimated time: {eta:.2f} seconds", error=False)
 
-    def _extract_numeric_value(self, row: tuple) -> Optional[float]:
+    def _extract_numeric_value(self, row: ParameterRow) -> Optional[float]:
         checkbox, line_edit, parameter, default_value, default_label = row
         if checkbox.isChecked():
             text = line_edit.text().strip()
@@ -496,25 +351,6 @@ class PlanEditorWidget(QWidget):
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _coerce_parameter_value(parameter: PlanParameter, value_text: str) -> object:
-        type_name = parameter.inferred_type().lower() if hasattr(parameter, "inferred_type") else (parameter.type_name or "str").lower()
-        text = value_text.strip()
-        default_value = getattr(parameter, "default", None)
-        has_container_default = isinstance(default_value, (list, tuple, dict, set))
-
-        # Parse structured literals before fallback coercion so queue payloads
-        # preserve container types instead of being submitted as strings.
-        if has_container_default or any(token in type_name for token in ("list", "tuple", "dict", "set", "sequence", "mapping")):
-            for parser in (json.loads, ast.literal_eval):
-                try:
-                    return parser(text)
-                except Exception:
-                    continue
-
-        return parameter.coerce(value_text)
-
-
     def _apply_roi_to_parameters(self, roi: Mapping[str, object]) -> None:
         if not self._parameter_rows or not self._roi_key_map:
             return
@@ -526,184 +362,17 @@ class PlanEditorWidget(QWidget):
                 row = self._parameter_rows.get(target_name)
                 if not row:
                     continue
-                checkbox, line_edit, parameter, default_value, default_label = row
-                checkbox.blockSignals(True)
-                checkbox.setChecked(True)
-                checkbox.blockSignals(False)
-                line_edit.setEnabled(True)
-                line_edit.setStyleSheet(SYNC_VALUE_STYLE)
-                line_edit.setText(str(value))
+                apply_parameter_row_value(row, value)
         self._update_eta_display()
 
-    def _handle_sync_action(self, action: SyncAction) -> None:
-        if self._controller is None:
-            self._set_status("No controller available to sync plan parameters", error=True)
-            return
-        call_kwargs = self._build_sync_call_kwargs(action)
-        if call_kwargs is None:
-            return
-        api = getattr(self._controller, "_api", None)
-        sync_method = getattr(api, action.qserver_function, None) if api is not None else None
-        if not callable(sync_method):
-            self._set_status(
-                f"QServer API method '{action.qserver_function}' is not available",
-                error=True,
-            )
-            return
-        result = sync_method(timeout=action.timeout, **call_kwargs)
-        payload = self._normalize_sync_result(result, action)
-        if not payload:
-            self._set_status(f"No sync data returned from '{action.qserver_function}'", error=True)
-            return
-        if action.result_target == "inputs":
-            self._apply_sync_result_to_inputs(payload)
-        else:
-            self._apply_roi_to_parameters(payload)
-        self._set_status(f"Updated plan parameters from '{action.text}'")
-
-    def _build_sync_call_kwargs(self, action: SyncAction) -> Optional[Dict[str, object]]:
-        kwargs: Dict[str, object] = {}
-        if action.input_map:
-            for arg_name, source_name in action.input_map.items():
-                value = self._read_sync_input_value(source_name)
-                if value is None:
-                    self._set_status(
-                        f"Unable to resolve sync input '{source_name}' for '{action.text}'",
-                        error=True,
-                    )
-                    return None
-                kwargs[arg_name] = value
-        if action.parameter_map:
-            for arg_name, source_name in action.parameter_map.items():
-                value = self._resolve_sync_parameter_value(source_name)
-                if value is None:
-                    self._set_status(
-                        f"Unable to resolve sync parameter '{source_name}' for '{action.text}'",
-                        error=True,
-                    )
-                    return None
-                kwargs[arg_name] = value
-        return kwargs
-
-    def _read_sync_input_value(self, name: str) -> object | None:
-        widget = self._sync_input_widgets.get(name)
-        if widget is None:
-            return None
-        value_text = widget.text().strip()
-        if not value_text:
-            return None
-        try:
-            return float(value_text)
-        except ValueError:
-            return value_text
-
-    def _apply_sync_result_to_inputs(self, payload: Mapping[str, object]) -> None:
-        for key, value in payload.items():
-            widget = self._sync_input_widgets.get(str(key))
-            if widget is not None:
-                widget.setStyleSheet(SYNC_VALUE_STYLE)
-                widget.setText(str(value))
-
-    def _resolve_sync_parameter_value(self, source_name: str) -> object | None:
-        row = self._parameter_rows.get(source_name)
-        if row is not None:
-            return self._read_parameter_row_value(row)
-
-        for alias in self._roi_key_map.get(source_name, []):
-            alias_row = self._parameter_rows.get(alias)
-            if alias_row is None:
-                continue
-            return self._read_parameter_row_value(alias_row)
-        return None
-
-    def _read_parameter_row_value(
-        self,
-        row: tuple[QCheckBox, QLineEdit, PlanParameter, object | None, str],
-    ) -> object | None:
-        checkbox, line_edit, parameter, default_value, default_label = row
-        if checkbox.isChecked():
-            value_text = line_edit.text().strip()
-            if not value_text or value_text == default_label:
-                return None
-            try:
-                return self._coerce_parameter_value(parameter, value_text)
-            except (ValueError, TypeError):
-                return None
-        return default_value
-
-    def _normalize_sync_result(self, result: object, action: SyncAction) -> Dict[str, object]:
-        if action.transform:
-            return self._apply_sync_transform(result, action.transform)
-        if isinstance(result, Mapping):
-            return {str(key): value for key, value in result.items()}
-        if action.result_keys and isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
-            return {
-                key: value
-                for key, value in zip(action.result_keys, result)
-            }
-        return {}
-
-    def _apply_sync_transform(self, result: object, transform: Mapping[str, object]) -> Dict[str, object]:
-        payload: Dict[str, object] = {}
-        for target_key, spec in transform.items():
-            value = self._resolve_transform_value(result, spec)
-            if value is not None:
-                payload[str(target_key)] = value
+    def _augment_roi_with_context(self, roi: Mapping[str, object]) -> Dict[str, object]:
+        payload = dict(roi)
+        if not self._roi_context_map or not self._selected_dataset_values:
+            return payload
+        for roi_key, dataset_key in self._roi_context_map.items():
+            if dataset_key in self._selected_dataset_values:
+                payload[roi_key] = self._selected_dataset_values[dataset_key]
         return payload
-
-    @staticmethod
-    def _resolve_transform_value(result: object, spec: object) -> object | None:
-        if isinstance(spec, Mapping):
-            source = spec.get("source")
-            value = PlanEditorWidget._extract_sync_source_value(result, source)
-            if value is None:
-                return None
-            if isinstance(value, (int, float)):
-                scale = spec.get("scale", 1)
-                offset = spec.get("offset", 0)
-                try:
-                    value = value * float(scale) + float(offset)
-                except (TypeError, ValueError):
-                    return None
-                digits = spec.get("round")
-                if digits is not None:
-                    try:
-                        value = round(value, int(digits))
-                    except (TypeError, ValueError):
-                        return None
-            return value
-        return PlanEditorWidget._extract_sync_source_value(result, spec)
-
-    @staticmethod
-    def _extract_sync_source_value(result: object, source: object) -> object | None:
-        if isinstance(source, int):
-            if isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
-                return result[source] if -len(result) <= source < len(result) else None
-            return None
-        if isinstance(source, str):
-            if isinstance(result, Mapping):
-                return result.get(source)
-            return None
-        return None
-
-    @staticmethod
-    def _format_default_label(text: str) -> str:
-        display = text if text else "None"
-        return f"{display} (default)"
-
-    @staticmethod
-    def _normalize_key_map(raw_map: Optional[Mapping[str, object]]) -> Dict[str, List[str]]:
-        normalized: Dict[str, List[str]] = {}
-        if not isinstance(raw_map, Mapping):
-            return normalized
-        for key, targets in raw_map.items():
-            if isinstance(targets, str):
-                normalized[str(key)] = [targets]
-            elif isinstance(targets, Iterable) and not isinstance(targets, (str, bytes)):
-                collected = [str(item) for item in targets if isinstance(item, str)]
-                if collected:
-                    normalized[str(key)] = collected
-        return normalized
 
     
     def _emit_planning(self) -> None:
@@ -725,11 +394,11 @@ class PlanEditorWidget(QWidget):
         }
 
         for name, (checkbox, line_edit, parameter, default_value, default_label) in self._parameter_rows.items():
-            expected_type = parameter.inferred_type() if hasattr(parameter, "inferred_type") else (parameter.type_name or "str")
+            expected_type = infer_parameter_type(parameter)
             if checkbox.isChecked():
                 value_text = line_edit.text()
                 try:
-                    value = self._coerce_parameter_value(parameter, value_text)
+                    value = coerce_parameter_value(parameter, value_text)
                     plan_item["kwargs"][name] = value
                 except (ValueError, TypeError):
                     self._set_status(
@@ -760,11 +429,11 @@ class PlanEditorWidget(QWidget):
         }
 
         for name, (checkbox, line_edit, parameter, default_value, default_label) in self._parameter_rows.items():
-            expected_type = parameter.inferred_type() if hasattr(parameter, 'inferred_type') else (parameter.type_name or 'str')
+            expected_type = infer_parameter_type(parameter)
             if checkbox.isChecked():
                 value_text = line_edit.text()
                 try:
-                    value = self._coerce_parameter_value(parameter, value_text)
+                    value = coerce_parameter_value(parameter, value_text)
                     queue_item['kwargs'][name] = value
                 except (ValueError, TypeError):
                     self._set_status(f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})", error=True)

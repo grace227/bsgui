@@ -21,7 +21,7 @@ tabs:
       loaders:
         xrf:
           enabled: true
-          loader_path: "mic_vis.common.load_xrf:load_h5_file"
+          loader_path: "mic_vis.bnp.io:load_bnp_h5_file"
           search_paths:
             - ./data/img.dat
           file_patterns:
@@ -88,6 +88,9 @@ tabs:
             - target_theta
             - smp_theta
             - theta
+        roi_context_map:
+          z: sample_z
+          theta: sample_theta
         sync_inputs:
           - name: x0
             label: x0

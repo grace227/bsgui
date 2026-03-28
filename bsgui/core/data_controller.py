@@ -36,6 +36,8 @@ class DataVisualizationController:
     elms_data: np.ndarray = np.array([])
     x_val: np.ndarray = np.array([])
     y_val: np.ndarray = np.array([])
+    sample_z: float = None
+    sample_theta: float = None
 
     def __init__(
         self,

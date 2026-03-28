@@ -64,11 +64,26 @@ class DataVisualizationWidget(QWidget):
             self.show_message("Failed to plot dataset")
             return
 
+        dataset_values: dict[str, Any] = {}
+        cached_data = controller.cached_data
+        if isinstance(cached_data, Mapping):
+            for key, value in cached_data.items():
+                if isinstance(value, (str, int, float, bool)) or value is None:
+                    dataset_values[str(key)] = value
+                    continue
+                shape = getattr(value, "shape", None)
+                if shape == () and hasattr(value, "item"):
+                    try:
+                        dataset_values[str(key)] = value.item()
+                    except Exception:
+                        continue
+        
         payload = {
             "xval": xval,
             "yval": yval,
             "zval": zval,
             "metadata": dict(metadata) if metadata is not None else {},
+            "dataset_values": dataset_values,
             "path": source_path,
         }
         self._last_payload = payload
@@ -78,7 +93,7 @@ class DataVisualizationWidget(QWidget):
         ylabel = payload["metadata"].get("ylabel", "Y")
         colormap = payload['metadata'].get('color_map', 'inferno')
 
-        if any([xval is None, yval is None, zval is None]):
+        if any([xval is None, yval is None]):
             self.show_message("Dataset missing 'x' and 'y'")
         else:
             if not title and source_path is not None:
