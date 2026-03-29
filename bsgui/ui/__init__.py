@@ -8,6 +8,7 @@ from .plot_canvas import PlotCanvasWidget
 from .queue_monitor import QueueMonitorWidget
 from .qserver_status import QueueServerStatusWidget
 from .qserver_console import QServerConsoleWidget
+from .scan_parameter_viewer import ScanParameterViewerWidget
 from .canvas_toolbar import CustomToolbar
 from .status_bus import get_status_bus, emit_status
 from .xrf_loader import XRFLoaderWidget
@@ -25,6 +26,7 @@ __all__ = [
     "QueueMonitorWidget",
     "QueueServerStatusWidget",
     "QServerConsoleWidget",
+    "ScanParameterViewerWidget",
     "XRFLoaderWidget",
     "get_status_bus",
     "emit_status",

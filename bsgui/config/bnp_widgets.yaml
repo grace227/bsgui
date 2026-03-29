@@ -228,11 +228,44 @@ tabs:
           label: Status
           stretch: true
 
+  - key: scan_parameter_viewer
+    title: Parameter Viewer
+    description: Browse Bluesky HDF5 files and inspect extracted scan plan arguments.
+    start_expanded: true
+    options:
+      enabled: true
+      search_paths:
+        - /net/micdata/data1/bnp/2026-1/blueskydev/bluesky
+      file_patterns:
+        - "*.h5"
+      loader_path: "mic_vis.common.load_meta:load_bluesky_meta"
+      parameter_key_map:
+        X:
+          - sample_x
+          - x_center
+          - x_center_mm
+          - x
+        Y:
+          - sample_y
+          - y_center
+          - y_center_mm
+          - y
+        Z:
+          - sample_z
+          - z_center
+          - z_center_mm
+          - z
+        Theta:
+          - target_theta
+          - smp_theta
+          - theta
+
 layout:
   type: tabs
   tab_order:
     - scan_setup
     - qserver_monitor
+    - scan_parameter_viewer
   status_bar:
     enabled: true
     messages:

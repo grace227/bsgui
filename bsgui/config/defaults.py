@@ -20,6 +20,7 @@ from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
 from ..ui.qserver_status import QueueServerStatusWidget
 from ..ui.qserver_console import QServerConsoleWidget
 from ..ui.queue_monitor import QueueMonitorWidget
+from ..ui.scan_parameter_viewer import ScanParameterViewerWidget
 
 
 def _parse_env_file(path: pathlib.Path) -> Mapping[str, str]:
@@ -137,6 +138,7 @@ def register_default_widgets(
     data_paths: Optional[Iterable[pathlib.Path]] = None,
     data_viewer_options: Optional[dict] = None,
     qserver_kwargs: Optional[dict] = None,
+    scan_parameter_viewer_options: Optional[dict] = None,
 ) -> None:
     """Populate the registry with the default widget set."""
 
@@ -457,3 +459,40 @@ def register_default_widgets(
             factory=make_qserver_monitor,
         )
     )
+
+    scan_parameter_cfg = scan_parameter_viewer_options or {}
+    if scan_parameter_cfg.get("enabled", True):
+        def make_scan_parameter_viewer() -> QWidget:
+            search_paths = _coerce_paths(scan_parameter_cfg.get("search_paths"), fallback_paths)
+            initial_directory = search_paths[0] if search_paths else None
+            file_patterns = scan_parameter_cfg.get("file_patterns")
+            if not isinstance(file_patterns, Sequence) or isinstance(file_patterns, (str, bytes)):
+                file_patterns = ("*.h5",)
+            key_map = scan_parameter_cfg.get("parameter_key_map")
+            parameter_key_map = key_map if isinstance(key_map, Mapping) else None
+            metadata_loader = _resolve_loader_callable(
+                scan_parameter_cfg,
+                _import_callable("mic_vis.common.load_meta:load_bluesky_meta"),
+            )
+            widget = ScanParameterViewerWidget(
+                metadata_loader=metadata_loader,
+                file_patterns=file_patterns,
+                parameter_key_map=parameter_key_map,
+                initial_directory=initial_directory,
+            )
+            try:
+                qserver_controller = ensure_controller()
+            except Exception:
+                qserver_controller = None
+            if qserver_controller is not None:
+                widget._qserver_controller = qserver_controller
+            return widget
+
+        target.register(
+            WidgetDescriptor(
+                key="scan_parameter_viewer",
+                title="Scan Parameter Viewer",
+                description="Browse Bluesky HDF5 files and review extracted scan parameters.",
+                factory=make_scan_parameter_viewer,
+            )
+        )

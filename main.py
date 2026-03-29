@@ -219,6 +219,7 @@ def main(argv: List[str]) -> int:
                     loader_cfg["search_paths"] = data_paths
 
     qserver_options = extract_widget_options(tab_configs, "qserver_monitor")
+    scan_parameter_viewer_options = extract_widget_options(tab_configs, "scan_parameter_viewer")
     qserver_kwargs = {}
     poll_interval = qserver_options.get("poll_interval_ms")
     if isinstance(poll_interval, (int, float)):
@@ -239,6 +240,7 @@ def main(argv: List[str]) -> int:
         data_paths=data_paths,
         data_viewer_options=scan_setup_options,
         qserver_kwargs=qserver_kwargs,
+        scan_parameter_viewer_options=scan_parameter_viewer_options,
     )
 
     title, window_size, status_messages = parse_app_settings(config)
