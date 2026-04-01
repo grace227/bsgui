@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
+    QFileDialog,
     QGridLayout,
     QHeaderView,
     QLabel,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from .base_loader import BaseLoaderWidget
+from .qtable_controls import export_qtable_to_csv
 
 
 class _ScanParameterLoaderWorker(QObject):
@@ -122,6 +124,9 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
 
         self._folder_button = QPushButton("Select Bluesky H5 Directory")
         self._folder_button.clicked.connect(self._choose_folder)
+        self._export_csv_button = QPushButton("Export CSV")
+        self._export_csv_button.clicked.connect(self._handle_export_csv)
+        self._export_csv_button.setEnabled(False)
 
         self._folder_label = QLabel("–")
         self._status_icon = QLabel("")
@@ -146,8 +151,9 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
 
         controls_layout = QGridLayout()
         controls_layout.addWidget(self._folder_button, 0, 0)
-        controls_layout.addWidget(self._folder_label, 0, 1)
-        controls_layout.setColumnStretch(1, 1)
+        controls_layout.addWidget(self._export_csv_button, 0, 1)
+        controls_layout.addWidget(self._folder_label, 0, 2)
+        controls_layout.setColumnStretch(2, 1)
 
         layout = QVBoxLayout(self)
         layout.addLayout(controls_layout)
@@ -178,6 +184,7 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
             self._table.clear()
             self._table.setRowCount(0)
             self._table.setColumnCount(0)
+            self._export_csv_button.setEnabled(False)
             self._progress_bar.setVisible(False)
             patterns = ", ".join(self._file_patterns) if self._file_patterns else "*.h5"
             self._set_status(
@@ -191,6 +198,7 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
         self._progress_bar.setFormat("Loaded %v/%m files")
         self._progress_bar.setVisible(True)
         self._folder_button.setEnabled(False)
+        self._export_csv_button.setEnabled(False)
         self._set_status(f"Loading {len(files)} file(s) from {directory}", icon="loading")
 
         self._loader_thread = QThread(self)
@@ -260,6 +268,7 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
         self._table.sortByColumn(0, Qt.SortOrder.DescendingOrder)
         self._progress_bar.setVisible(False)
         self._folder_button.setEnabled(True)
+        self._export_csv_button.setEnabled(bool(row_data))
         if skipped_files:
             self._set_status(
                 f"Loaded {len(row_data)} file(s) from {directory} using pattern(s): {patterns}. "
@@ -275,6 +284,7 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
     def _handle_loader_failed(self, message: str) -> None:
         self._progress_bar.setVisible(False)
         self._folder_button.setEnabled(True)
+        self._export_csv_button.setEnabled(False)
         self._set_status(f"Failed to load metadata: {message}", error=True, icon="warning")
 
     def _cleanup_loader(self) -> None:
@@ -284,6 +294,35 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
         if self._loader_thread is not None:
             self._loader_thread.deleteLater()
             self._loader_thread = None
+
+    def _handle_export_csv(self) -> None:
+        if self._table.rowCount() == 0 or self._table.columnCount() == 0:
+            self._set_status("No parameter rows to save.", icon="warning")
+            return
+
+        default_name = "scan_parameters.csv"
+        initial_directory = self._resolve_dialog_directory() or self._current_directory or pathlib.Path.cwd()
+        initial_path = str(initial_directory / default_name)
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Scan Parameters",
+            initial_path,
+            "CSV Files (*.csv);;All Files (*)",
+        )
+        if not file_path:
+            return
+        if not file_path.lower().endswith(".csv"):
+            file_path = f"{file_path}.csv"
+
+        try:
+            row_count = export_qtable_to_csv(self._table, file_path)
+        except Exception as exc:
+            self._set_status(f"Failed to save scan parameter CSV: {exc}", error=True, icon="warning")
+            return
+
+        suffix = "" if row_count == 1 else "s"
+        self._set_status(f"Saved {row_count} parameter row{suffix} to {file_path}.", icon="success")
 
     @staticmethod
     def _normalize_parameter_key_map(raw_map: Optional[Mapping[str, object]]) -> Dict[str, list[str]]:
