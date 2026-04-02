@@ -54,7 +54,7 @@ class MonitorService:
                 print(f"Stall watchdog status error: {exc}")
                 continue
 
-            re_state = status.get("re_state")
+            re_state = status.get("worker_environment_state")
             with self._state_lock:
                 stalled = (time.monotonic() - self._last_console_message_at) >= settings.console_stall_seconds
                 should_alert = re_state == "executing_plan" and stalled and not self._stall_alert_sent
