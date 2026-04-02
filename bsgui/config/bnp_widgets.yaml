@@ -48,6 +48,20 @@ tabs:
             - name: iterate_variable
               description: Name of one of the plan's variables to iterate over
               default: smp_theta
+              iterate_actions:
+                theta:
+                  text: Batch theta transform
+                  qserver_function: syncXYZ_transform
+                  input_map:
+                    x: x0
+                    y: y0
+                    z: z0
+                    theta: __iterate_value__
+                  sync_input_map:
+                    x0: x
+                    y0: y
+                    z0: z
+                  result_target: parameters
             - name: iterate_starting_value
               description: Starting value of the iterate variable
               default: 0.0

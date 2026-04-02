@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, TypeAlias
 
 from PySide6.QtCore import QRegularExpression
 from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator
-from PySide6.QtWidgets import QCheckBox, QLineEdit
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLineEdit, QWidget
 
 from ..core.qserver_controller import PlanParameter
 
@@ -16,7 +16,8 @@ OVERHEAD_FACTOR = 3
 SYNC_VALUE_STYLE = "color: #2e7d32;"
 DEFAULT_DISABLED_STYLE = "color: #666666;"
 
-ParameterRow: TypeAlias = tuple[QCheckBox, QLineEdit, PlanParameter, object | None, str]
+ParameterEditor: TypeAlias = QLineEdit | QComboBox
+ParameterRow: TypeAlias = tuple[QCheckBox, ParameterEditor, PlanParameter, object | None, str]
 
 
 def convert_extra_parameters(config: Any) -> List[PlanParameter]:
@@ -90,10 +91,36 @@ def coerce_parameter_value(parameter: PlanParameter, value_text: str) -> object:
     return parameter.coerce(value_text)
 
 
+def read_parameter_editor_text(editor: ParameterEditor) -> str:
+    if isinstance(editor, QComboBox):
+        return editor.currentText().strip()
+    return editor.text().strip()
+
+
+def set_parameter_editor_text(editor: ParameterEditor, value: str) -> None:
+    if isinstance(editor, QComboBox):
+        index = editor.findText(value)
+        if index >= 0:
+            editor.setCurrentIndex(index)
+        elif value:
+            editor.addItem(value)
+            editor.setCurrentIndex(editor.count() - 1)
+        else:
+            editor.setCurrentIndex(-1)
+        return
+    editor.setText(value)
+
+
+def set_parameter_editor_enabled(editor: ParameterEditor, enabled: bool, *, disabled_style: str = DEFAULT_DISABLED_STYLE) -> None:
+    editor.setEnabled(enabled)
+    if isinstance(editor, QLineEdit):
+        editor.setStyleSheet("" if enabled else disabled_style)
+
+
 def read_parameter_row_value(row: ParameterRow) -> object | None:
-    checkbox, line_edit, parameter, default_value, default_label = row
+    checkbox, editor, parameter, default_value, default_label = row
     if checkbox.isChecked():
-        value_text = line_edit.text().strip()
+        value_text = read_parameter_editor_text(editor)
         if not value_text or value_text == default_label:
             return None
         try:
@@ -104,13 +131,14 @@ def read_parameter_row_value(row: ParameterRow) -> object | None:
 
 
 def apply_parameter_row_value(row: ParameterRow, value: object, *, style: str = SYNC_VALUE_STYLE) -> None:
-    checkbox, line_edit, _parameter, _default_value, _default_label = row
+    checkbox, editor, _parameter, _default_value, _default_label = row
     checkbox.blockSignals(True)
     checkbox.setChecked(True)
     checkbox.blockSignals(False)
-    line_edit.setEnabled(True)
-    line_edit.setStyleSheet(style)
-    line_edit.setText(str(value))
+    set_parameter_editor_enabled(editor, True)
+    if isinstance(editor, QLineEdit):
+        editor.setStyleSheet(style)
+    set_parameter_editor_text(editor, str(value))
 
 
 def format_default_label(text: str) -> str:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -19,6 +19,12 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+)
+from ..core.batch_generation import (
+    apply_roi_payload_to_kwargs,
+    build_iteration_values,
+    execute_iteration_action,
+    normalize_iteration_actions,
 )
 from ..core.qserver_controller import PlanDefinition, PlanParameter
 from .qserver_planning import emit_plan_added
@@ -35,10 +41,109 @@ from .plan_editor_utils import (
     infer_parameter_type,
     normalize_key_map,
     normalize_string_map,
+    read_parameter_row_value,
+    read_parameter_editor_text,
+    set_parameter_editor_enabled,
+    set_parameter_editor_text,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing helper
     from ..core.qserver_controller import QServerController
+
+
+class BatchGenerationWorker(QObject):
+    itemGenerated = Signal(dict, str, dict, dict)
+    failed = Signal(str)
+    finished = Signal(int)
+
+    def __init__(
+        self,
+        *,
+        api: object,
+        plan_name: str,
+        iterate_variable: str,
+        iterate_values: Sequence[float],
+        base_kwargs: Mapping[str, object],
+        parameter_types: Mapping[str, str],
+        roi_key_map: Mapping[str, Sequence[str]],
+        iteration_action: Optional[Mapping[str, object]] = None,
+        sync_inputs: Optional[Mapping[str, object]] = None,
+    ) -> None:
+        super().__init__()
+        self._api = api
+        self._plan_name = plan_name
+        self._iterate_variable = iterate_variable
+        self._iterate_values = list(iterate_values)
+        self._base_kwargs = dict(base_kwargs)
+        self._parameter_types = {str(key): str(value) for key, value in parameter_types.items()}
+        self._roi_key_map = roi_key_map
+        self._iteration_action = iteration_action
+        self._sync_inputs = dict(sync_inputs or {})
+
+    def run(self) -> None:
+        generated = 0
+        total = len(self._iterate_values)
+        for iterate_value in self._iterate_values:
+            queue_item = {
+                "item_type": "plan",
+                "name": self._plan_name,
+                "kwargs": dict(self._base_kwargs),
+            }
+            queue_item["kwargs"][self._iterate_variable] = self._format_iterate_value(
+                queue_item["kwargs"].get(self._iterate_variable),
+                iterate_value,
+            )
+            payload: Dict[str, object] = {}
+
+            if self._iteration_action:
+                try:
+                    payload = execute_iteration_action(
+                        self._api,
+                        self._iteration_action,
+                        sync_inputs=self._sync_inputs,
+                        iterate_value=iterate_value,
+                    )
+                except Exception as exc:
+                    self.failed.emit(
+                        f"Batch generation stopped while processing "
+                        f"{self._iterate_variable}={iterate_value}: {exc}"
+                    )
+                    return
+
+                result_target = self._iteration_action.get("result_target", "parameters")
+                if result_target in {"parameters", "both"}:
+                    apply_roi_payload_to_kwargs(
+                        queue_item["kwargs"],
+                        payload,
+                        self._roi_key_map,
+                        allowed_parameters=self._parameter_types.keys(),
+                    )
+                sync_input_map = self._iteration_action.get("sync_input_map")
+                if isinstance(sync_input_map, Mapping):
+                    for target, source in sync_input_map.items():
+                        if isinstance(target, str) and isinstance(source, str) and source in payload:
+                            self._sync_inputs[target] = payload[source]
+
+            generated += 1
+            status = (
+                f"Added batch plan {generated}/{total}: "
+                f"{self._plan_name} ({self._iterate_variable}={iterate_value})"
+            )
+            self.itemGenerated.emit(
+                queue_item,
+                status,
+                payload,
+                dict(self._sync_inputs),
+            )
+
+        self.finished.emit(generated)
+
+    def _format_iterate_value(self, base_value: object, iterate_value: object) -> object:
+        type_name = self._parameter_types.get(self._iterate_variable, "").lower()
+        if type_name == "str":
+            prefix = "" if base_value is None else str(base_value)
+            return f"{prefix}{iterate_value}"
+        return iterate_value
 
 class PlanEditorWidget(QWidget):
     """Widget for browsing plan definitions and preparing submissions."""
@@ -63,6 +168,7 @@ class PlanEditorWidget(QWidget):
         self._kinds = list(kinds) if kinds else ["plan", "instruction"]
         self._definitions: List[PlanDefinition] = []
         self._extra_parameters: Dict[str, List[PlanParameter]] = {}
+        self._kind_parameter_configs = kind_overrides if isinstance(kind_overrides, Mapping) else {}
         if isinstance(kind_overrides, Mapping):
             for kind in self._kinds:
                 self._extra_parameters[kind] = convert_extra_parameters(kind_overrides.get(kind, []))
@@ -74,6 +180,8 @@ class PlanEditorWidget(QWidget):
         self._parameter_rows: Dict[str, ParameterRow] = {}
         self._roi_key_map = normalize_key_map(roi_key_map)
         self._roi_context_map = normalize_string_map(roi_context_map)
+        self._batch_thread: Optional[QThread] = None
+        self._batch_worker: Optional[BatchGenerationWorker] = None
 
         self._tabs = QTabWidget()
         self._extra_panel = PlanEditorExtraPanel(
@@ -136,6 +244,7 @@ class PlanEditorWidget(QWidget):
 
         self._batch_button = QPushButton("Batch Generation")
         self._batch_button.setEnabled(False)
+        self._batch_button.clicked.connect(self._emit_batch_generation)
         self._add_button = QPushButton("Add to Queue")
         self._add_button.clicked.connect(self._emit_submission)
         self._planning_button = QPushButton("Planning")
@@ -256,6 +365,7 @@ class PlanEditorWidget(QWidget):
 
         extras = self._extra_parameters.get(self._current_kind, [])
         parameters = list(extras) + list(definition.parameters)
+        latest_kwargs = self._get_latest_plan_kwargs(definition.name)
 
         self._parameter_table.setRowCount(len(parameters))
         self._parameter_rows.clear()
@@ -281,49 +391,73 @@ class PlanEditorWidget(QWidget):
             layout.setSpacing(6)
 
             checkbox = QCheckBox()
-            line_edit = QLineEdit(default_label)
-            line_edit.setEnabled(False)
-            line_edit.setStyleSheet(DEFAULT_DISABLED_STYLE)
-            if parameter.description:
-                line_edit.setToolTip(parameter.description)
+            editor = self._create_parameter_editor(parameter, definition, default_label)
 
-            inferred_type = infer_parameter_type(parameter)
-            validator = self._build_validator(parameter, line_edit)
-            if validator is not None:
-                line_edit.setValidator(validator)
-            if inferred_type == "bool":
-                line_edit.setPlaceholderText("True / False")
-            elif inferred_type == "int":
-                line_edit.setPlaceholderText("Enter integer")
-            elif inferred_type == "float":
-                line_edit.setPlaceholderText("Enter number")
-
-            def handle_toggle(checked: bool, le: QLineEdit = line_edit, text=default_text, label=default_label) -> None:
+            def handle_toggle(checked: bool, editor=editor, text=default_text, label=default_label) -> None:
                 if checked:
-                    le.setEnabled(True)
-                    le.setStyleSheet("")
-                    if le.text() == label:
-                        le.setText("" if text == "None" else text)
+                    set_parameter_editor_enabled(editor, True)
+                    if read_parameter_editor_text(editor) == label:
+                        set_parameter_editor_text(editor, "" if text == "None" else text)
                 else:
-                    le.setEnabled(False)
-                    le.setStyleSheet(DEFAULT_DISABLED_STYLE)
-                    le.setText(label)
+                    set_parameter_editor_enabled(editor, False)
+                    set_parameter_editor_text(editor, label)
                 self._update_eta_display()
 
             checkbox.toggled.connect(handle_toggle)
-            line_edit.textEdited.connect(lambda _text: self._update_eta_display())
+            if isinstance(editor, QLineEdit):
+                editor.textEdited.connect(lambda _text: self._update_eta_display())
+            elif isinstance(editor, QComboBox):
+                editor.currentTextChanged.connect(lambda _text: self._update_eta_display())
 
             layout.addWidget(checkbox)
-            layout.addWidget(line_edit, 1)
+            layout.addWidget(editor, 1)
             self._parameter_table.setCellWidget(row, 1, container)
 
-            self._parameter_rows[parameter.name] = (checkbox, line_edit, parameter, default_value, default_label)
+            row_data = (checkbox, editor, parameter, default_value, default_label)
+            self._parameter_rows[parameter.name] = row_data
+            if parameter.name in latest_kwargs and latest_kwargs[parameter.name] is not None:
+                apply_parameter_row_value(row_data, latest_kwargs[parameter.name], style="")
 
         self._update_eta_display()
 
     def _build_validator(self, parameter: PlanParameter, line_edit: QLineEdit):
         type_name = infer_parameter_type(parameter)
         return build_type_validator(type_name, line_edit)
+
+    def _create_parameter_editor(
+        self,
+        parameter: PlanParameter,
+        definition: PlanDefinition,
+        default_label: str,
+    ) -> QLineEdit | QComboBox:
+        if self._current_kind == "batch" and parameter.name == "iterate_variable":
+            combo = QComboBox()
+            combo.setEnabled(False)
+            for plan_parameter in definition.parameters:
+                combo.addItem(plan_parameter.name)
+            if combo.count() > 0:
+                combo.setCurrentIndex(0)
+            if parameter.description:
+                combo.setToolTip(parameter.description)
+            return combo
+
+        line_edit = QLineEdit(default_label)
+        line_edit.setEnabled(False)
+        line_edit.setStyleSheet(DEFAULT_DISABLED_STYLE)
+        if parameter.description:
+            line_edit.setToolTip(parameter.description)
+
+        inferred_type = infer_parameter_type(parameter)
+        validator = self._build_validator(parameter, line_edit)
+        if validator is not None:
+            line_edit.setValidator(validator)
+        if inferred_type == "bool":
+            line_edit.setPlaceholderText("True / False")
+        elif inferred_type == "int":
+            line_edit.setPlaceholderText("Enter integer")
+        elif inferred_type == "float":
+            line_edit.setPlaceholderText("Enter number")
+        return line_edit
 
     def _update_eta_display(self) -> None:
         eta = self._get_plan_time()
@@ -332,10 +466,37 @@ class PlanEditorWidget(QWidget):
         else:
             self._set_status(f"Estimated time: {eta:.2f} seconds", error=False)
 
+    def _get_latest_plan_kwargs(self, plan_name: str) -> Dict[str, object]:
+        if self._controller is None:
+            return {}
+        snapshot = self._controller.fetch_snapshot()
+        if snapshot is None:
+            return {}
+
+        candidates: list[Mapping[str, object]] = []
+        if isinstance(snapshot.running, Mapping):
+            candidates.append(snapshot.running)
+        candidates.extend(
+            item for item in reversed(snapshot.pending or []) if isinstance(item, Mapping)
+        )
+        candidates.extend(
+            item for item in reversed(snapshot.completed or []) if isinstance(item, Mapping)
+        )
+
+        for item in candidates:
+            if item.get("item_type") != "plan":
+                continue
+            if item.get("name") != plan_name:
+                continue
+            kwargs = item.get("kwargs")
+            if isinstance(kwargs, Mapping):
+                return dict(kwargs)
+        return {}
+
     def _extract_numeric_value(self, row: ParameterRow) -> Optional[float]:
-        checkbox, line_edit, parameter, default_value, default_label = row
+        checkbox, editor, parameter, default_value, default_label = row
         if checkbox.isChecked():
-            text = line_edit.text().strip()
+            text = read_parameter_editor_text(editor)
             if not text:
                 return None
             try:
@@ -393,10 +554,10 @@ class PlanEditorWidget(QWidget):
             "kwargs": {},
         }
 
-        for name, (checkbox, line_edit, parameter, default_value, default_label) in self._parameter_rows.items():
+        for name, (checkbox, editor, parameter, default_value, default_label) in self._parameter_rows.items():
             expected_type = infer_parameter_type(parameter)
             if checkbox.isChecked():
-                value_text = line_edit.text()
+                value_text = read_parameter_editor_text(editor)
                 try:
                     value = coerce_parameter_value(parameter, value_text)
                     plan_item["kwargs"][name] = value
@@ -410,6 +571,53 @@ class PlanEditorWidget(QWidget):
         emit_plan_added(plan_item)
         self._set_status(f"Planned '{definition.name}'.")
 
+    def _emit_batch_generation(self) -> None:
+        definition = self.current_plan()
+        if definition is None:
+            return
+
+        iterate_variable = self._require_batch_value("iterate_variable", expected_type="str")
+        start_value = self._require_batch_value("iterate_starting_value", expected_type="float")
+        end_value = self._require_batch_value("iterate_ending_value", expected_type="float")
+        step_value = self._require_batch_value("iterate_step_size", expected_type="float")
+        if iterate_variable is None or start_value is None or end_value is None or step_value is None:
+            return
+
+        parameter_names = {parameter.name for parameter in definition.parameters}
+        if iterate_variable not in parameter_names:
+            self._set_status(
+                f"Batch iterate variable '{iterate_variable}' is not a parameter of '{definition.name}'",
+                error=True,
+            )
+            return
+
+        try:
+            iterate_values = build_iteration_values(float(start_value), float(end_value), float(step_value))
+        except ValueError as exc:
+            self._set_status(str(exc), error=True)
+            return
+
+        base_kwargs = self._collect_current_plan_kwargs(definition)
+        if base_kwargs is None:
+            return
+
+        iteration_action = self._get_iteration_action(iterate_variable)
+        api = getattr(self._controller, "_api", None) if self._controller is not None else None
+        if api is None:
+            self._set_status("No controller available to generate batch plans", error=True)
+            return
+
+        sync_inputs = self._build_batch_sync_inputs(iteration_action)
+        self._start_batch_worker(
+            api=api,
+            definition=definition,
+            iterate_variable=str(iterate_variable),
+            iterate_values=iterate_values,
+            base_kwargs=base_kwargs,
+            parameter_types={parameter.name: infer_parameter_type(parameter) for parameter in definition.parameters},
+            iteration_action=iteration_action,
+            sync_inputs=sync_inputs,
+        )
 
     def _emit_submission(self) -> None:
         definition = self.current_plan()
@@ -428,10 +636,10 @@ class PlanEditorWidget(QWidget):
             "kwargs": {},
         }
 
-        for name, (checkbox, line_edit, parameter, default_value, default_label) in self._parameter_rows.items():
+        for name, (checkbox, editor, parameter, default_value, default_label) in self._parameter_rows.items():
             expected_type = infer_parameter_type(parameter)
             if checkbox.isChecked():
-                value_text = line_edit.text()
+                value_text = read_parameter_editor_text(editor)
                 try:
                     value = coerce_parameter_value(parameter, value_text)
                     queue_item['kwargs'][name] = value
@@ -448,6 +656,138 @@ class PlanEditorWidget(QWidget):
 
         self._controller._api.item_add(queue_item)
         self._set_status(f"Plan '{definition.name}' queued")
+
+    def _collect_current_plan_kwargs(self, definition: PlanDefinition) -> Optional[Dict[str, object]]:
+        queue_kwargs: Dict[str, object] = {}
+        parameter_names = {parameter.name for parameter in definition.parameters}
+        for name, (checkbox, editor, parameter, default_value, default_label) in self._parameter_rows.items():
+            if name not in parameter_names:
+                continue
+            expected_type = infer_parameter_type(parameter)
+            if checkbox.isChecked():
+                value_text = read_parameter_editor_text(editor)
+                try:
+                    value = coerce_parameter_value(parameter, value_text)
+                    queue_kwargs[name] = value
+                except (ValueError, TypeError):
+                    self._set_status(
+                        f"Invalid value '{value_text}' for parameter '{name}' (expected {expected_type})",
+                        error=True,
+                    )
+                    return None
+        return queue_kwargs
+
+    def _require_batch_value(self, name: str, *, expected_type: str) -> object | None:
+        row = self._parameter_rows.get(name)
+        if row is None:
+            self._set_status(f"Missing batch parameter '{name}'", error=True)
+            return None
+        value = read_parameter_row_value(row)
+        if value is None:
+            self._set_status(f"Batch parameter '{name}' is required", error=True)
+            return None
+        if expected_type == "float":
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                self._set_status(f"Batch parameter '{name}' must be numeric", error=True)
+                return None
+        return str(value)
+
+    def _get_iteration_action(self, iterate_variable: str) -> Optional[Mapping[str, object]]:
+        batch_config = self._kind_parameter_configs.get("batch")
+        if not isinstance(batch_config, Sequence) or isinstance(batch_config, (str, bytes)):
+            return None
+        for entry in batch_config:
+            if not isinstance(entry, Mapping):
+                continue
+            if entry.get("name") != "iterate_variable":
+                continue
+            actions = normalize_iteration_actions(entry.get("iterate_actions"))
+            return actions.get(iterate_variable)
+        return None
+
+    def _build_batch_sync_inputs(self, iteration_action: Optional[Mapping[str, object]]) -> Dict[str, object]:
+        if not isinstance(iteration_action, Mapping):
+            return {}
+        sync_inputs: Dict[str, object] = {}
+        input_map = iteration_action.get("input_map")
+        if not isinstance(input_map, Mapping):
+            return sync_inputs
+        for source_name in input_map.values():
+            if not isinstance(source_name, str) or source_name == "__iterate_value__":
+                continue
+            value = self._extra_panel.get_sync_input_value(source_name)
+            if value is not None:
+                sync_inputs[source_name] = value
+        return sync_inputs
+
+    def _start_batch_worker(
+        self,
+        *,
+        api: object,
+        definition: PlanDefinition,
+        iterate_variable: str,
+        iterate_values: Sequence[float],
+        base_kwargs: Mapping[str, object],
+        parameter_types: Mapping[str, str],
+        iteration_action: Optional[Mapping[str, object]],
+        sync_inputs: Mapping[str, object],
+    ) -> None:
+        self._cleanup_batch_worker()
+        self._batch_button.setEnabled(False)
+        self._set_status(f"Generating {len(iterate_values)} batch plan(s) for '{definition.name}'...", error=False)
+
+        self._batch_thread = QThread(self)
+        self._batch_worker = BatchGenerationWorker(
+            api=api,
+            plan_name=definition.name,
+            iterate_variable=iterate_variable,
+            iterate_values=iterate_values,
+            base_kwargs=base_kwargs,
+            parameter_types=parameter_types,
+            roi_key_map=self._roi_key_map,
+            iteration_action=iteration_action,
+            sync_inputs=sync_inputs,
+        )
+        self._batch_worker.moveToThread(self._batch_thread)
+        self._batch_thread.started.connect(self._batch_worker.run)
+        self._batch_worker.itemGenerated.connect(self._handle_batch_item_generated)
+        self._batch_worker.failed.connect(self._handle_batch_failed)
+        self._batch_worker.finished.connect(self._handle_batch_finished)
+        self._batch_worker.failed.connect(self._batch_thread.quit)
+        self._batch_worker.finished.connect(self._batch_thread.quit)
+        self._batch_thread.finished.connect(self._cleanup_batch_worker)
+        self._batch_thread.start()
+
+    def _handle_batch_item_generated(
+        self,
+        queue_item: Mapping[str, object],
+        status: str,
+        payload: Mapping[str, object],
+        sync_inputs: Mapping[str, object],
+    ) -> None:
+        emit_plan_added(queue_item)
+        if sync_inputs:
+            self._extra_panel.apply_sync_result_to_inputs(sync_inputs)
+        self._set_status(status, error=False)
+
+    def _handle_batch_failed(self, message: str) -> None:
+        self._batch_button.setEnabled(self._current_kind == "batch")
+        self._set_status(message, error=True)
+
+    def _handle_batch_finished(self, generated: int) -> None:
+        self._batch_button.setEnabled(self._current_kind == "batch")
+        if generated == 0:
+            self._set_status("No batch plans generated.", error=True)
+
+    def _cleanup_batch_worker(self) -> None:
+        if self._batch_worker is not None:
+            self._batch_worker.deleteLater()
+            self._batch_worker = None
+        if self._batch_thread is not None:
+            self._batch_thread.deleteLater()
+            self._batch_thread = None
 
     def _set_status(self, message: str, error: bool = False) -> None:
         self._status_label.setText(message)

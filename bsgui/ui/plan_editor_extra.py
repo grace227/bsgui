@@ -111,46 +111,50 @@ class PlanEditorExtraPanel(QWidget):
         if not isinstance(config, Sequence) or isinstance(config, (str, bytes)):
             return actions
         for entry in config:
-            if not isinstance(entry, Mapping):
-                continue
-            text = entry.get("text")
-            function_name = entry.get("qserver_function")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            if not isinstance(function_name, str) or not function_name.strip():
-                continue
-            raw_result_keys = entry.get("result_keys")
-            result_keys: tuple[str, ...] = ()
-            if isinstance(raw_result_keys, Sequence) and not isinstance(raw_result_keys, (str, bytes)):
-                result_keys = tuple(str(item) for item in raw_result_keys if isinstance(item, str))
-            transform = entry.get("transform") if isinstance(entry.get("transform"), Mapping) else None
-            parameter_map = (
-                {str(key): str(value) for key, value in entry.get("parameter_map", {}).items()}
-                if isinstance(entry.get("parameter_map"), Mapping)
-                else None
-            )
-            input_map = (
-                {str(key): str(value) for key, value in entry.get("input_map", {}).items()}
-                if isinstance(entry.get("input_map"), Mapping)
-                else None
-            )
-            result_target = entry.get("result_target") if isinstance(entry.get("result_target"), str) else "parameters"
-            user_group = entry.get("user_group") if isinstance(entry.get("user_group"), str) else "root"
-            timeout = float(entry.get("timeout", 5.0))
-            actions.append(
-                SyncAction(
-                    text=text.strip(),
-                    qserver_function=function_name.strip(),
-                    result_keys=result_keys,
-                    transform=transform,
-                    parameter_map=parameter_map,
-                    input_map=input_map,
-                    result_target=result_target,
-                    user_group=user_group,
-                    timeout=timeout,
-                )
-            )
+            action = PlanEditorExtraPanel._normalize_sync_action_entry(entry)
+            if action is not None:
+                actions.append(action)
         return actions
+
+    @staticmethod
+    def _normalize_sync_action_entry(entry: object) -> Optional[SyncAction]:
+        if not isinstance(entry, Mapping):
+            return None
+        text = entry.get("text")
+        function_name = entry.get("qserver_function")
+        if not isinstance(text, str) or not text.strip():
+            return None
+        if not isinstance(function_name, str) or not function_name.strip():
+            return None
+        raw_result_keys = entry.get("result_keys")
+        result_keys: tuple[str, ...] = ()
+        if isinstance(raw_result_keys, Sequence) and not isinstance(raw_result_keys, (str, bytes)):
+            result_keys = tuple(str(item) for item in raw_result_keys if isinstance(item, str))
+        transform = entry.get("transform") if isinstance(entry.get("transform"), Mapping) else None
+        parameter_map = (
+            {str(key): str(value) for key, value in entry.get("parameter_map", {}).items()}
+            if isinstance(entry.get("parameter_map"), Mapping)
+            else None
+        )
+        input_map = (
+            {str(key): str(value) for key, value in entry.get("input_map", {}).items()}
+            if isinstance(entry.get("input_map"), Mapping)
+            else None
+        )
+        result_target = entry.get("result_target") if isinstance(entry.get("result_target"), str) else "parameters"
+        user_group = entry.get("user_group") if isinstance(entry.get("user_group"), str) else "root"
+        timeout = float(entry.get("timeout", 5.0))
+        return SyncAction(
+            text=text.strip(),
+            qserver_function=function_name.strip(),
+            result_keys=result_keys,
+            transform=transform,
+            parameter_map=parameter_map,
+            input_map=input_map,
+            result_target=result_target,
+            user_group=user_group,
+            timeout=timeout,
+        )
 
     @staticmethod
     def _normalize_sync_input_fields(config: Optional[Sequence[object]]) -> List[SyncInputField]:
@@ -203,11 +207,16 @@ class PlanEditorExtraPanel(QWidget):
             self._apply_roi_callback(payload)
         self._set_status_callback(f"Updated plan parameters from '{action.text}'", False)
 
-    def _build_sync_call_kwargs(self, action: SyncAction) -> Optional[Dict[str, object]]:
+    def _build_sync_call_kwargs(
+        self,
+        action: SyncAction,
+        *,
+        overrides: Optional[Mapping[str, object]] = None,
+    ) -> Optional[Dict[str, object]]:
         kwargs: Dict[str, object] = {}
         if action.input_map:
             for arg_name, source_name in action.input_map.items():
-                value = self._read_sync_input_value(source_name)
+                value = overrides.get(source_name) if overrides and source_name in overrides else self._read_sync_input_value(source_name)
                 if value is None:
                     self._set_status_callback(
                         f"Unable to resolve sync input '{source_name}' for '{action.text}'",
@@ -217,7 +226,11 @@ class PlanEditorExtraPanel(QWidget):
                 kwargs[arg_name] = value
         if action.parameter_map:
             for arg_name, source_name in action.parameter_map.items():
-                value = self._resolve_sync_parameter_value(source_name)
+                value = (
+                    overrides.get(source_name)
+                    if overrides and source_name in overrides
+                    else self._resolve_sync_parameter_value(source_name)
+                )
                 if value is None:
                     self._set_status_callback(
                         f"Unable to resolve sync parameter '{source_name}' for '{action.text}'",
@@ -245,6 +258,56 @@ class PlanEditorExtraPanel(QWidget):
             if widget is not None:
                 widget.setStyleSheet(SYNC_VALUE_STYLE)
                 widget.setText(str(value))
+
+    def apply_sync_result_to_inputs(
+        self,
+        payload: Mapping[str, object],
+        *,
+        mapping: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        if mapping:
+            translated = {
+                str(target_name): payload[source_name]
+                for target_name, source_name in mapping.items()
+                if source_name in payload
+            }
+            self._apply_sync_result_to_inputs(translated)
+            return
+        self._apply_sync_result_to_inputs(payload)
+
+    def get_sync_input_value(self, name: str) -> object | None:
+        return self._read_sync_input_value(name)
+
+    def execute_action(
+        self,
+        spec: Mapping[str, object],
+        *,
+        overrides: Optional[Mapping[str, object]] = None,
+    ) -> Optional[Dict[str, object]]:
+        if self._controller is None:
+            self._set_status_callback("No controller available to sync plan parameters", True)
+            return None
+        action = self._normalize_sync_action_entry(spec)
+        if action is None:
+            self._set_status_callback("Invalid sync action configuration", True)
+            return None
+        call_kwargs = self._build_sync_call_kwargs(action, overrides=overrides)
+        if call_kwargs is None:
+            return None
+        api = getattr(self._controller, "_api", None)
+        sync_method = getattr(api, action.qserver_function, None) if api is not None else None
+        if not callable(sync_method):
+            self._set_status_callback(
+                f"QServer API method '{action.qserver_function}' is not available",
+                True,
+            )
+            return None
+        result = sync_method(timeout=action.timeout, **call_kwargs)
+        payload = self._normalize_sync_result(result, action)
+        if not payload:
+            self._set_status_callback(f"No sync data returned from '{action.qserver_function}'", True)
+            return None
+        return payload
 
     def _resolve_sync_parameter_value(self, source_name: str) -> object | None:
         parameter_rows = self._parameter_rows_getter()
