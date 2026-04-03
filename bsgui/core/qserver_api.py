@@ -9,6 +9,13 @@ from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
 import time
 
+from bs_monitor.monitor import (
+    capture_active_snapshot,
+    capture_named_device_snapshot,
+    capture_running_item_snapshot,
+)
+from bs_monitor.pv import PVCache
+
 
 class _ConsoleMonitorBuffer:
     def __init__(self, *, max_messages: int = 2000) -> None:
@@ -47,10 +54,12 @@ class QServerAPI(REManagerAPI):
     _console_output: Optional[ReceiveConsoleOutput] = None
 
     def __init__(self, *args, **kwargs) -> None:
+        self._beamline_monitor_manifest_path = kwargs.pop("beamline_monitor_manifest_path", None)
         super().__init__(*args, **kwargs)
         self._save_data_path = None
         self._console_output = ReceiveConsoleOutput(zmq_subscribe_addr=kwargs.get("zmq_info_addr", None))
         self._console_monitor = _ConsoleMonitorBuffer()
+        self._pv_cache = PVCache()
 
     @property
     def console_monitor(self) -> _ConsoleMonitorBuffer:
@@ -200,6 +209,14 @@ class QServerAPI(REManagerAPI):
     def get_save_data_path(self, *, timeout: float = 5.0) -> Optional[str]:
         return self.execute_function("get_save_data_path", timeout=timeout)
 
+    def get_global_health_snapshot(self, *, timeout: float = 5.0) -> Any:
+        del timeout
+        return capture_named_device_snapshot(
+            ["sample", "scanrecord", "fly_dwell", "bda"],
+            pv_cache=self._pv_cache,
+            manifest_path=self._beamline_monitor_manifest_path,
+        )
+
     def execute_function(
         self,
         function_name: str,
@@ -253,6 +270,65 @@ class QServerAPI(REManagerAPI):
         if theta is not None:
             call_kwargs["theta"] = theta
         return self.execute_function("syncXYZ_transform", call_kwargs=call_kwargs, timeout=timeout)
+
+    def get_plan_monitor_snapshot(
+        self,
+        plan_name: str,
+        *,
+        plan_args: Optional[Mapping[str, Any]] = None,
+        include_baseline: bool = True,
+        timeout: float = 5.0,
+    ) -> Any:
+        del timeout
+        return capture_running_item_snapshot(
+            {
+                "item_type": "plan",
+                "plan_name": plan_name,
+                "name": plan_name,
+                "kwargs": dict(plan_args or {}),
+            },
+            include_baseline=include_baseline,
+            pv_cache=self._pv_cache,
+            allowed_plans=self.get_allowed_plans(normalize=True),
+        )
+
+    def get_running_item(self) -> Optional[Dict[str, Any]]:
+        try:
+            queue = self.queue_get()
+        except Exception as exc:  # pragma: no cover - network path
+            print(f"Error fetching running item: {exc}")
+            return None
+
+        running_item = queue.get("running_item")
+        if isinstance(running_item, Mapping):
+            return dict(running_item)
+        return None
+
+    def get_active_plan_monitor_snapshot(
+        self,
+        *,
+        include_baseline: bool = True,
+    ) -> Any:
+        return capture_active_snapshot(
+            self,
+            include_baseline=include_baseline,
+            pv_cache=self._pv_cache,
+            manifest_path=self._beamline_monitor_manifest_path,
+        )
+
+    def get_running_item_monitor_snapshot(
+        self,
+        running_item: Mapping[str, Any] | None,
+        *,
+        include_baseline: bool = True,
+    ) -> Any:
+        return capture_running_item_snapshot(
+            running_item,
+            include_baseline=include_baseline,
+            pv_cache=self._pv_cache,
+            manifest_path=self._beamline_monitor_manifest_path,
+            allowed_plans=self.get_allowed_plans(normalize=True),
+        )
 
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:

@@ -1,5 +1,6 @@
 """User interface components for the beamline UI."""
 
+from .beamline_monitor import BeamlineMonitorWidget
 from .base_loader import BaseLoaderWidget
 from .scan_setup import DataVisualizationWidget, DataViewerPane
 from .ptychography_loader import PtychographyLoaderWidget
@@ -15,6 +16,7 @@ from .xrf_loader import XRFLoaderWidget
 
 __all__ = [
     "BaseLoaderWidget",
+    "BeamlineMonitorWidget",
     "CustomToolbar",
     "DataVisualizationWidget",
     "DataViewerPane",

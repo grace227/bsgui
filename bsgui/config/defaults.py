@@ -14,6 +14,7 @@ from ..core import DataVisualizationController, default_loader
 from ..core.qserver_api import QServerAPI
 from ..core.qserver_controller import QServerController
 from ..ui.scan_setup import DataViewerPane
+from ..ui.beamline_monitor import BeamlineMonitorWidget
 from ..ui.ptychography_loader import PtychographyLoaderWidget
 from ..ui.xrf_loader import XRFLoaderWidget
 from ..ui.plan_editor import PlanDefinition, PlanEditorWidget, PlanParameter
@@ -138,6 +139,7 @@ def register_default_widgets(
     data_paths: Optional[Iterable[pathlib.Path]] = None,
     data_viewer_options: Optional[dict] = None,
     qserver_kwargs: Optional[dict] = None,
+    beamline_monitor_options: Optional[dict] = None,
     scan_parameter_viewer_options: Optional[dict] = None,
 ) -> None:
     """Populate the registry with the default widget set."""
@@ -274,6 +276,9 @@ def register_default_widgets(
             api = QServerAPI(
                 zmq_control_addr=control_address,
                 zmq_info_addr=info_address,
+                beamline_monitor_manifest_path=(
+                    beamline_monitor_options or {}
+                ).get("manifest_path"),
             )
             _qserver_controller = QServerController(
                 api=api,
@@ -496,3 +501,28 @@ def register_default_widgets(
                 factory=make_scan_parameter_viewer,
             )
         )
+
+    beamline_monitor_cfg = beamline_monitor_options or {}
+
+    def make_beamline_monitor() -> QWidget:
+        controller = ensure_controller()
+        widget = BeamlineMonitorWidget(
+            title=str(beamline_monitor_cfg.get("title", "Beamline Monitor")),
+            poll_interval_ms=int(beamline_monitor_cfg.get("poll_interval_ms", 3000)),
+            auto_refresh=bool(beamline_monitor_cfg.get("auto_refresh", True)),
+            detector_recovery_cooldown_seconds=beamline_monitor_cfg.get("detector_recovery_cooldown_seconds"),
+            detector_timeout_factor=beamline_monitor_cfg.get("detector_timeout_factor"),
+            sample_position_tolerance=beamline_monitor_cfg.get("sample_position_tolerance"),
+        )
+        widget.set_controller(controller)
+        controller.start_polling()
+        return widget
+
+    target.register(
+        WidgetDescriptor(
+            key="beamline_monitor",
+            title="Beamline Monitor",
+            description="View the active plan's beamline hardware snapshot.",
+            factory=make_beamline_monitor,
+        )
+    )

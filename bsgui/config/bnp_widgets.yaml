@@ -242,6 +242,19 @@ tabs:
           label: Status
           stretch: true
 
+  - key: beamline_monitor
+    title: Beamline Monitor
+    description: Monitor beamline status.
+    start_expanded: true
+    options:
+      enabled: true
+      poll_interval_ms: 3000
+      auto_connect: true
+      manifest_path: /home/beams11/USERBNP/src/bluesky-mic/src/bnp/qserver/beamline_monitor.json
+      detector_recovery_cooldown_seconds: 30.0
+      detector_timeout_factor: 3.0
+      sample_position_tolerance: 0.1
+  
   - key: scan_parameter_viewer
     title: Parameter Viewer
     description: Browse Bluesky HDF5 files and inspect extracted scan plan arguments.
@@ -279,6 +292,7 @@ layout:
   tab_order:
     - scan_setup
     - qserver_monitor
+    - beamline_monitor
     - scan_parameter_viewer
   status_bar:
     enabled: true
