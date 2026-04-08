@@ -250,7 +250,7 @@ class PlanEditorWidget(QWidget):
         self._planning_button = QPushButton("Planning")
         self._planning_button.clicked.connect(self._emit_planning)
         self._reset_button = QPushButton("Reset")
-        self._reset_button.clicked.connect(self._populate_parameters)
+        self._reset_button.clicked.connect(self._reset_parameters)
 
         for button in [
             self._batch_button,
@@ -357,7 +357,7 @@ class PlanEditorWidget(QWidget):
             self._batch_button.setEnabled(True)
             self._add_button.setEnabled(False)
         
-    def _populate_parameters(self) -> None:
+    def _populate_parameters(self, *, use_latest_kwargs: bool = True) -> None:
         definition = self.current_plan()
         if definition is None:
             self._parameter_table.setRowCount(0)
@@ -365,7 +365,7 @@ class PlanEditorWidget(QWidget):
 
         extras = self._extra_parameters.get(self._current_kind, [])
         parameters = list(extras) + list(definition.parameters)
-        latest_kwargs = self._get_latest_plan_kwargs(definition.name)
+        latest_kwargs = self._get_latest_plan_kwargs(definition.name) if use_latest_kwargs else {}
 
         self._parameter_table.setRowCount(len(parameters))
         self._parameter_rows.clear()
@@ -419,6 +419,9 @@ class PlanEditorWidget(QWidget):
                 apply_parameter_row_value(row_data, latest_kwargs[parameter.name], style="")
 
         self._update_eta_display()
+
+    def _reset_parameters(self) -> None:
+        self._populate_parameters(use_latest_kwargs=False)
 
     def _build_validator(self, parameter: PlanParameter, line_edit: QLineEdit):
         type_name = infer_parameter_type(parameter)

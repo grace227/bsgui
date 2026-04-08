@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from datetime import timedelta
 from typing import Any, Mapping, Optional
 
 from PySide6.QtCore import Qt, QTimer
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from bs_monitor.detector_handlers import DEFAULT_RECOVERY_MANAGER, configure_detector_recovery
 from bs_monitor.health import configure_health, detector_hung, evaluate_device_health, sample_hung_axes
 from .status_bus import emit_status
 
@@ -35,11 +35,9 @@ class BeamlineMonitorWidget(QWidget):
         detector_recovery_cooldown_seconds: float | None = None,
         detector_timeout_factor: float | None = None,
         sample_position_tolerance: float | None = None,
+        detector_retries: int = 1,
     ) -> None:
         super().__init__(parent)
-        configure_detector_recovery(
-            detector_recovery_cooldown_seconds=detector_recovery_cooldown_seconds
-        )
         configure_health(
             detector_timeout_factor=detector_timeout_factor,
             sample_position_tolerance=sample_position_tolerance,
@@ -49,6 +47,14 @@ class BeamlineMonitorWidget(QWidget):
         self._detector_monitor_enabled = False
         self._expanded_devices: set[str] = set()
         self._last_snapshot: Mapping[str, Any] | None = None
+        self._refresh_in_progress = False
+        self._detector_recovery_cooldown_seconds = (
+            float(detector_recovery_cooldown_seconds)
+            if detector_recovery_cooldown_seconds is not None
+            else 30.0
+        )
+        self._detector_retries = max(1, int(detector_retries))
+        self._last_recovery_at: dict[str, datetime] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -129,30 +135,36 @@ class BeamlineMonitorWidget(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        if self._refresh_in_progress:
+            return
         controller = self._controller
         if controller is None:
             self._set_empty_state("No QServer controller")
             return
 
+        self._refresh_in_progress = True
         scroll_bar = self._device_list.verticalScrollBar()
         scroll_value = scroll_bar.value() if scroll_bar is not None else None
 
         try:
-            snapshot = controller._api.get_active_plan_monitor_snapshot()
-        except Exception as exc:
-            self._set_empty_state("Failed to load beamline snapshot", error=str(exc))
-            emit_status(f"Beamline monitor refresh failed: {exc}")
-            return
+            try:
+                snapshot = controller._api.get_active_plan_monitor_snapshot()
+            except Exception as exc:
+                self._set_empty_state("Failed to load beamline snapshot", error=str(exc))
+                emit_status(f"Beamline monitor refresh failed: {exc}")
+                return
 
-        if not isinstance(snapshot, Mapping):
-            self._set_empty_state("Beamline snapshot unavailable", error=str(snapshot))
-            return
+            if not isinstance(snapshot, Mapping):
+                self._set_empty_state("Beamline snapshot unavailable", error=str(snapshot))
+                return
 
-        if self._detector_monitor_enabled:
-            self._run_detector_monitor(snapshot)
-        self._render_snapshot(snapshot)
-        if scroll_bar is not None and scroll_value is not None:
-            scroll_bar.setValue(scroll_value)
+            if self._detector_monitor_enabled:
+                self._run_detector_monitor(snapshot)
+            self._render_snapshot(snapshot)
+            if scroll_bar is not None and scroll_value is not None:
+                scroll_bar.setValue(scroll_value)
+        finally:
+            self._refresh_in_progress = False
 
     def _toggle_auto_refresh(self, checked: bool) -> None:
         self._auto_refresh = bool(checked)
@@ -203,7 +215,7 @@ class BeamlineMonitorWidget(QWidget):
         self._set_error(None if idle_error else str(error) if error else None)
 
         self._device_list.clear()
-        for device_name in sorted(devices):
+        for device_name in self._ordered_device_names(devices):
             device = devices.get(device_name)
             if isinstance(device, Mapping):
                 self._add_device_row(device_name, device, snapshot=snapshot)
@@ -308,33 +320,42 @@ class BeamlineMonitorWidget(QWidget):
             self._set_error("No beamline snapshot available for detector recovery")
             return
 
-        result = DEFAULT_RECOVERY_MANAGER.recover_detector(device_name, snapshot, force=True)
+        controller = self._controller
+        if controller is None:
+            self._set_error("No QServer controller available for detector recovery")
+            return
+
+        result = controller._api.recover_detector(device_name, retries=self._detector_retries)
         reason = result.get("reason")
-        attempted = bool(result.get("attempted"))
-        recovered = bool(result.get("recovered"))
-        if attempted and recovered:
+        recovered = bool(result.get("success"))
+        if recovered:
+            self._last_recovery_at[device_name] = datetime.now()
             emit_status(f"{device_name} detector recovery commands sent")
             self._set_error(None)
-        elif attempted:
-            self._set_error(f"{device_name} recovery failed: {reason or 'unknown error'}")
-            emit_status(f"{device_name} detector recovery failed")
         else:
-            self._set_error(f"{device_name} recovery skipped: {reason or 'not applicable'}")
-            emit_status(f"{device_name} detector recovery skipped")
+            self._set_error(f"{device_name} recovery failed: {reason or result.get('error') or 'unknown error'}")
+            emit_status(f"{device_name} detector recovery failed")
         self.refresh()
 
     def _run_detector_monitor(self, snapshot: Mapping[str, Any]) -> None:
-        result = DEFAULT_RECOVERY_MANAGER.recover_hung_detectors(snapshot, force=False)
-        results = result.get("results")
-        if not isinstance(results, list):
+        controller = self._controller
+        if controller is None:
             return
-
-        attempted = [entry for entry in results if isinstance(entry, Mapping) and entry.get("attempted")]
-        if not attempted:
-            return
-
-        recovered = [str(entry.get("device")) for entry in attempted if entry.get("recovered")]
-        failed = [str(entry.get("device")) for entry in attempted if not entry.get("recovered")]
+        now = datetime.now()
+        recovered: list[str] = []
+        failed: list[str] = []
+        for device_name in ("xmap", "xp3", "eiger"):
+            if not detector_hung(device_name, snapshot):
+                continue
+            previous = self._last_recovery_at.get(device_name)
+            if previous is not None and now - previous < timedelta(seconds=self._detector_recovery_cooldown_seconds):
+                continue
+            result = controller._api.recover_detector(device_name, retries=self._detector_retries)
+            if isinstance(result, Mapping) and result.get("success"):
+                self._last_recovery_at[device_name] = now
+                recovered.append(device_name)
+            else:
+                failed.append(device_name)
 
         if recovered:
             emit_status(f"Detector monitor sent recovery for {', '.join(recovered)}")

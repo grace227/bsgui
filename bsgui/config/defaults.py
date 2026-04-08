@@ -513,6 +513,7 @@ def register_default_widgets(
             detector_recovery_cooldown_seconds=beamline_monitor_cfg.get("detector_recovery_cooldown_seconds"),
             detector_timeout_factor=beamline_monitor_cfg.get("detector_timeout_factor"),
             sample_position_tolerance=beamline_monitor_cfg.get("sample_position_tolerance"),
+            detector_retries=int(beamline_monitor_cfg.get("detector_retries", 1)),
         )
         widget.set_controller(controller)
         controller.start_polling()

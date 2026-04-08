@@ -248,10 +248,10 @@ tabs:
     start_expanded: true
     options:
       enabled: true
-      poll_interval_ms: 3000
+      poll_interval_ms: 5000
       auto_connect: true
-      manifest_path: /home/beams11/USERBNP/src/bluesky-mic/src/bnp/qserver/beamline_monitor.json
       detector_recovery_cooldown_seconds: 30.0
+      detector_retries: 1
       detector_timeout_factor: 3.0
       sample_position_tolerance: 0.1
   

@@ -68,9 +68,9 @@ def _parse_timestamp(raw: Any) -> datetime | None:
 
 def _scanrecord_paused(pvs: Mapping[str, Any]) -> bool:
     return (
-        _truthy_pv(pvs.get("scan_pause"))
-        or _pv_at_least_one(pvs.get("inner_client_wait"))
-        or _pv_at_least_one(pvs.get("outer_client_wait"))
+        _truthy_pv(pvs.get("pause_signal"))
+        or _pv_at_least_one(pvs.get("inner.wait"))
+        or _pv_at_least_one(pvs.get("outer.wait"))
     )
 
 
@@ -179,7 +179,7 @@ def _scan_phase_waiting_for_detectors(snapshot: Mapping[str, Any]) -> bool:
     pvs = scanrecord.get("pvs")
     if not isinstance(pvs, Mapping):
         return False
-    waiting_phases = {"WAIT:DETECTORS", "WAIT:AFTER_SCAN"}
+    waiting_phases = {"WAIT:DETCTRS", "WAIT:AFTER_SCAN"}
     for key in ("inner.scan_phase", "outer.scan_phase"):
         phase = _pv_value(pvs.get(key))
         if isinstance(phase, str) and phase.strip() in waiting_phases:
@@ -209,6 +209,7 @@ def _detector_hung(device_name: str, snapshot: Mapping[str, Any]) -> bool:
         return False
     if not _scan_phase_waiting_for_detectors(snapshot):
         return False
+
     ring_current = _ring_current(snapshot)
     if ring_current is None or ring_current <= 0:
         return False

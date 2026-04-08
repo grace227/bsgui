@@ -9,14 +9,6 @@ from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
 import time
 
-from bs_monitor.monitor import (
-    capture_active_snapshot,
-    capture_named_device_snapshot,
-    capture_running_item_snapshot,
-)
-from bs_monitor.pv import PVCache
-
-
 class _ConsoleMonitorBuffer:
     def __init__(self, *, max_messages: int = 2000) -> None:
         self._buffer = deque(maxlen=max(1, max_messages))
@@ -59,7 +51,6 @@ class QServerAPI(REManagerAPI):
         self._save_data_path = None
         self._console_output = ReceiveConsoleOutput(zmq_subscribe_addr=kwargs.get("zmq_info_addr", None))
         self._console_monitor = _ConsoleMonitorBuffer()
-        self._pv_cache = PVCache()
 
     @property
     def console_monitor(self) -> _ConsoleMonitorBuffer:
@@ -209,12 +200,11 @@ class QServerAPI(REManagerAPI):
     def get_save_data_path(self, *, timeout: float = 5.0) -> Optional[str]:
         return self.execute_function("get_save_data_path", timeout=timeout)
 
-    def get_global_health_snapshot(self, *, timeout: float = 5.0) -> Any:
-        del timeout
-        return capture_named_device_snapshot(
-            ["sample", "scanrecord", "fly_dwell", "bda"],
-            pv_cache=self._pv_cache,
-            manifest_path=self._beamline_monitor_manifest_path,
+    def get_global_health_snapshot(self, *, timeout: float = 30.0) -> Any:
+        return self.execute_function(
+            "get_global_health_snapshot",
+            call_kwargs={"manifest_path": self._beamline_monitor_manifest_path},
+            timeout=timeout,
         )
 
     def execute_function(
@@ -223,13 +213,14 @@ class QServerAPI(REManagerAPI):
         *,
         call_kwargs: Optional[Mapping[str, Any]] = None,
         user_group: str = "root",
-        timeout: float = 5.0,
+        timeout: float = 30.0,
+        run_in_background: bool = True,
     ) -> Any:
         """Execute a qserver function and return its ``return_value``."""
 
         func = BFunc(function_name, **dict(call_kwargs or {}))
         try:
-            reply = self.function_execute(func, user_group=user_group)
+            reply = self.function_execute(func, user_group=user_group, run_in_background=run_in_background)
             if not reply.get("success"):
                 print(f"QueueServer rejected {function_name}(): {reply.get('msg')}")
                 return None
@@ -258,7 +249,7 @@ class QServerAPI(REManagerAPI):
         y: object | None = None,
         z: object | None = None,
         theta: object | None = None,
-        timeout: float = 5.0,
+        timeout: float = 30.0,
     ) -> Any:
         call_kwargs: Dict[str, Any] = {}
         if x is not None:
@@ -271,25 +262,36 @@ class QServerAPI(REManagerAPI):
             call_kwargs["theta"] = theta
         return self.execute_function("syncXYZ_transform", call_kwargs=call_kwargs, timeout=timeout)
 
+    def recover_detector(
+        self,
+        device_name: str,
+        *,
+        retries: int = 1,
+        timeout: float = 15.0,
+    ) -> Any:
+        return self.execute_function(
+            "recover_detector",
+            call_kwargs={"device_name": device_name, "retries": retries},
+            timeout=timeout,
+        )
+
     def get_plan_monitor_snapshot(
         self,
         plan_name: str,
         *,
         plan_args: Optional[Mapping[str, Any]] = None,
         include_baseline: bool = True,
-        timeout: float = 5.0,
+        timeout: float = 30.0,
     ) -> Any:
-        del timeout
-        return capture_running_item_snapshot(
-            {
-                "item_type": "plan",
+        return self.execute_function(
+            "get_plan_monitor_snapshot",
+            call_kwargs={
                 "plan_name": plan_name,
-                "name": plan_name,
-                "kwargs": dict(plan_args or {}),
+                "plan_args": dict(plan_args or {}),
+                "include_baseline": include_baseline,
+                "manifest_path": self._beamline_monitor_manifest_path,
             },
-            include_baseline=include_baseline,
-            pv_cache=self._pv_cache,
-            allowed_plans=self.get_allowed_plans(normalize=True),
+            timeout=timeout,
         )
 
     def get_running_item(self) -> Optional[Dict[str, Any]]:
@@ -308,12 +310,13 @@ class QServerAPI(REManagerAPI):
         self,
         *,
         include_baseline: bool = True,
+        timeout: float = 5.0,
     ) -> Any:
-        return capture_active_snapshot(
-            self,
+        running_item = self.get_running_item()
+        return self.get_running_item_monitor_snapshot(
+            running_item,
             include_baseline=include_baseline,
-            pv_cache=self._pv_cache,
-            manifest_path=self._beamline_monitor_manifest_path,
+            timeout=timeout,
         )
 
     def get_running_item_monitor_snapshot(
@@ -321,14 +324,68 @@ class QServerAPI(REManagerAPI):
         running_item: Mapping[str, Any] | None,
         *,
         include_baseline: bool = True,
+        timeout: float = 5.0,
     ) -> Any:
-        return capture_running_item_snapshot(
-            running_item,
+        if not isinstance(running_item, Mapping):
+            return {
+                "timestamp": None,
+                "plan_name": None,
+                "plan_args": {},
+                "device_names": [],
+                "devices": {},
+                "pv_backend": "qserver-worker",
+                "manifest_path": self._beamline_monitor_manifest_path,
+                "error": "No running queue item found",
+            }
+
+        item_type = running_item.get("item_type", "plan")
+        plan_name = running_item.get("name")
+        if item_type != "plan" or not isinstance(plan_name, str) or not plan_name:
+            return {
+                "timestamp": None,
+                "plan_name": plan_name if isinstance(plan_name, str) else None,
+                "plan_args": {},
+                "device_names": [],
+                "devices": {},
+                "pv_backend": "qserver-worker",
+                "manifest_path": self._beamline_monitor_manifest_path,
+                "error": "Running item is not an executable plan",
+            }
+
+        plan_args = running_item.get("kwargs")
+        if not isinstance(plan_args, Mapping):
+            plan_args = {}
+        merged_args = self._merge_plan_kwargs_with_defaults(plan_name, plan_args)
+        return self.get_plan_monitor_snapshot(
+            plan_name,
+            plan_args=merged_args,
             include_baseline=include_baseline,
-            pv_cache=self._pv_cache,
-            manifest_path=self._beamline_monitor_manifest_path,
-            allowed_plans=self.get_allowed_plans(normalize=True),
+            timeout=timeout,
         )
+
+    def _merge_plan_kwargs_with_defaults(
+        self,
+        plan_name: str,
+        plan_args: Mapping[str, Any] | None,
+    ) -> Dict[str, Any]:
+        merged = dict(plan_args or {})
+        plan_spec = self.get_allowed_plans(normalize=True).get(plan_name)
+        if not isinstance(plan_spec, Mapping):
+            return merged
+
+        parameters = plan_spec.get("parameters")
+        if not isinstance(parameters, list):
+            return merged
+
+        for parameter in parameters:
+            if not isinstance(parameter, Mapping):
+                continue
+            name = parameter.get("name")
+            if not isinstance(name, str) or name in merged:
+                continue
+            if "default" in parameter:
+                merged[name] = parameter.get("default")
+        return merged
 
     @staticmethod
     def _normalize_allowed_plans(plans: Mapping[str, Any]) -> Dict[str, Any]:
