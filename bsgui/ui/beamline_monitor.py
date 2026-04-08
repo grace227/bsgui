@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from bs_monitor.health import configure_health, detector_hung, evaluate_device_health, sample_hung_axes
 from .status_bus import emit_status
 
 
@@ -29,7 +28,7 @@ class BeamlineMonitorWidget(QWidget):
         self,
         *,
         parent: Optional[QWidget] = None,
-        title: str = "Beamline Monitor",
+        title: str = "Scan Monitor",
         poll_interval_ms: int = 3000,
         auto_refresh: bool = True,
         detector_recovery_cooldown_seconds: float | None = None,
@@ -38,10 +37,6 @@ class BeamlineMonitorWidget(QWidget):
         detector_retries: int = 1,
     ) -> None:
         super().__init__(parent)
-        configure_health(
-            detector_timeout_factor=detector_timeout_factor,
-            sample_position_tolerance=sample_position_tolerance,
-        )
         self._controller = None
         self._auto_refresh = bool(auto_refresh)
         self._detector_monitor_enabled = False
@@ -192,19 +187,12 @@ class BeamlineMonitorWidget(QWidget):
 
     def _render_snapshot(self, snapshot: Mapping[str, Any]) -> None:
         self._last_snapshot = snapshot
-        plan_name = str(snapshot.get("plan_name") or "No active plan")
-        backend = str(snapshot.get("pv_backend") or "Unknown")
         devices = snapshot.get("devices")
         devices = dict(devices) if isinstance(devices, Mapping) else {}
         error = snapshot.get("error")
         idle_error = self._is_idle_snapshot_error(error)
 
-        device_statuses = [
-            evaluate_device_health(name, device, snapshot)
-            for name, device in devices.items()
-            if isinstance(device, Mapping)
-        ]
-        activity = self._summarize_activity(snapshot)
+        activity = str(snapshot.get("activity") or self._summarize_activity(snapshot))
         timestamp = self._format_timestamp(snapshot.get("timestamp"))
         manifest_path = snapshot.get("manifest_path") or "embedded defaults"
 
@@ -221,9 +209,9 @@ class BeamlineMonitorWidget(QWidget):
                 self._add_device_row(device_name, device, snapshot=snapshot)
 
     def _add_device_row(self, device_name: str, device: Mapping[str, Any], *, snapshot: Mapping[str, Any]) -> None:
-        status = evaluate_device_health(device_name, device, snapshot)
+        status = self._device_health(device_name, device, snapshot)
         color = self._status_color(status)
-        detail = self._summarize_device(device_name, device, snapshot=snapshot)
+        detail = self._device_summary(device)
         updated = self._latest_device_timestamp(device)
         expanded = device_name in self._expanded_devices
 
@@ -259,8 +247,8 @@ class BeamlineMonitorWidget(QWidget):
         title.setStyleSheet("font-weight: 600;")
         header_row.addWidget(title)
 
-        if device_name in {"xmap", "xp3", "eiger"}:
-            is_hung = detector_hung(device_name, snapshot)
+        if self._device_supports_recovery(device_name, device):
+            is_hung = self._device_is_hung(device)
             unhang_button = QPushButton("Unhang Detector")
             unhang_button.setCursor(Qt.CursorShape.PointingHandCursor)
             unhang_button.setEnabled(is_hung)
@@ -344,8 +332,12 @@ class BeamlineMonitorWidget(QWidget):
         now = datetime.now()
         recovered: list[str] = []
         failed: list[str] = []
-        for device_name in ("xmap", "xp3", "eiger"):
-            if not detector_hung(device_name, snapshot):
+        devices = snapshot.get("devices")
+        devices = dict(devices) if isinstance(devices, Mapping) else {}
+        for device_name, device in devices.items():
+            if not isinstance(device, Mapping) or not self._device_supports_recovery(device_name, device):
+                continue
+            if not self._device_is_hung(device):
                 continue
             previous = self._last_recovery_at.get(device_name)
             if previous is not None and now - previous < timedelta(seconds=self._detector_recovery_cooldown_seconds):
@@ -384,7 +376,7 @@ class BeamlineMonitorWidget(QWidget):
             self._device_overview_layout.addWidget(
                 self._make_device_chip(
                     device_name,
-                    evaluate_device_health(device_name, device, snapshot or {"devices": devices}),
+                    self._device_health(device_name, device, snapshot or {"devices": devices}),
                 )
             )
         self._device_overview_layout.addStretch(1)
@@ -416,6 +408,47 @@ class BeamlineMonitorWidget(QWidget):
         remaining = [name for name in devices.keys() if name not in preferred]
         return [name for name in preferred if name in devices] + sorted(remaining)
 
+    @staticmethod
+    def _device_supports_recovery(device_name: str, device: Mapping[str, Any]) -> bool:
+        del device_name
+        actions = device.get("actions")
+        if isinstance(actions, Mapping) and actions.get("recover") is not None:
+            return bool(actions.get("recover"))
+        role = device.get("role")
+        if isinstance(role, str) and role:
+            return role == "detector"
+        return "unhang" in str(device.get("summary") or "").lower()
+
+    @staticmethod
+    def _device_health(device_name: str, device: Mapping[str, Any], snapshot: Mapping[str, Any]) -> str:
+        del device_name, snapshot
+        health = device.get("health")
+        if isinstance(health, str) and health:
+            return health
+        if device.get("error"):
+            return "error"
+        pvs = device.get("pvs")
+        if not isinstance(pvs, Mapping) or not pvs:
+            return "warning"
+        connected = sum(1 for pv in pvs.values() if isinstance(pv, Mapping) and pv.get("connected"))
+        return "ok" if connected == len(pvs) else "warning" if connected else "error"
+
+    @staticmethod
+    def _device_is_hung(device: Mapping[str, Any]) -> bool:
+        summary = str(device.get("summary") or "").strip().lower()
+        return "hang" in summary
+
+    @staticmethod
+    def _device_summary(device: Mapping[str, Any]) -> str:
+        summary = device.get("summary")
+        if isinstance(summary, str) and summary:
+            return summary
+        pvs = device.get("pvs")
+        if not isinstance(pvs, Mapping):
+            return "No PV data"
+        connected = sum(1 for pv in pvs.values() if isinstance(pv, Mapping) and pv.get("connected"))
+        return f"{connected}/{len(pvs)} PVs connected"
+
     def _set_error(self, error: str | None) -> None:
         if error:
             self._error_label.setText(f"Error: {error}")
@@ -434,60 +467,12 @@ class BeamlineMonitorWidget(QWidget):
         }.get(status, "#9e9e9e")
 
     @staticmethod
-    def _overall_health(device_statuses: list[str], *, error: Any = None) -> str:
-        if error:
-            return "error"
-        if not device_statuses:
-            return "warning"
-        if all(status == "ok" for status in device_statuses):
-            return "ok"
-        if any(status == "ok" for status in device_statuses) or any(status == "warning" for status in device_statuses):
-            return "warning"
-        return "error"
-
-    @staticmethod
     def _summarize_activity(snapshot: Mapping[str, Any]) -> str:
         if BeamlineMonitorWidget._is_idle_snapshot_error(snapshot.get("error")):
             return "idle"
         if snapshot.get("error"):
             return str(snapshot.get("error"))
-
-        plan_name = snapshot.get("plan_name")
-        devices = snapshot.get("devices")
-        devices = dict(devices) if isinstance(devices, Mapping) else {}
-
-        scanrecord = devices.get("scanrecord")
-        if isinstance(scanrecord, Mapping):
-            pvs = scanrecord.get("pvs")
-            if isinstance(pvs, Mapping):
-                if BeamlineMonitorWidget._scanrecord_paused(pvs):
-                    return f"{plan_name or 'Scan'} paused"
-                current = BeamlineMonitorWidget._pv_value(pvs.get("outer_cpt"))
-                total = BeamlineMonitorWidget._pv_value(pvs.get("outer_npts"))
-                phase = BeamlineMonitorWidget._pv_value(pvs.get("outer_phase")) or BeamlineMonitorWidget._pv_value(
-                    pvs.get("inner_phase")
-                )
-                if current is not None and total is not None:
-                    return f"{plan_name or 'Scan'} line {current}/{total}" + (
-                        f" | phase {phase}" if phase not in (None, "") else ""
-                    )
-
-        for detector_name in ("eiger", "xp3", "xmap"):
-            detector = devices.get(detector_name)
-            if not isinstance(detector, Mapping):
-                continue
-            pvs = detector.get("pvs")
-            if not isinstance(pvs, Mapping):
-                continue
-            if BeamlineMonitorWidget._truthy_pv(pvs.get("capture")):
-                return f"{detector_name} capturing"
-            if BeamlineMonitorWidget._truthy_pv(pvs.get("acquire")):
-                return f"{detector_name} acquiring"
-            write_status = BeamlineMonitorWidget._pv_value(pvs.get("write_status"))
-            if write_status not in (None, "", 0, "0"):
-                return f"{detector_name} writing file"
-
-        return f"{plan_name or 'No active plan'} idle"
+        return str(snapshot.get("plan_name") or "No active plan")
 
     @staticmethod
     def _is_idle_snapshot_error(error: Any) -> bool:
@@ -498,93 +483,6 @@ class BeamlineMonitorWidget(QWidget):
             "No running queue item found",
             "Running item is not an executable plan",
         }
-
-    @staticmethod
-    def _summarize_device(device_name: str, device: Mapping[str, Any], *, snapshot: Mapping[str, Any]) -> str:
-        pvs = device.get("pvs")
-        if not isinstance(pvs, Mapping):
-            return "No PV data"
-
-        if device_name == "scanrecord":
-            if BeamlineMonitorWidget._scanrecord_paused(pvs):
-                reasons = []
-                if BeamlineMonitorWidget._truthy_pv(pvs.get("scan_pause")):
-                    reasons.append("scanPause PV")
-                if BeamlineMonitorWidget._pv_at_least_one(pvs.get("inner_client_wait")):
-                    reasons.append("scan1 client wait")
-                if BeamlineMonitorWidget._pv_at_least_one(pvs.get("outer_client_wait")):
-                    reasons.append("scan2 client wait")
-                reason_text = ", ".join(reasons) if reasons else "pause state detected"
-                return f"Paused by {reason_text}"
-            current = BeamlineMonitorWidget._pv_value(pvs.get("outer_cpt"))
-            total = BeamlineMonitorWidget._pv_value(pvs.get("outer_npts"))
-            phase = BeamlineMonitorWidget._pv_value(pvs.get("outer_phase"))
-            if current is not None and total is not None:
-                return f"Progress {current}/{total}" + (f" | phase {phase}" if phase not in (None, "") else "")
-            return "Waiting for scan record progress"
-
-        if device_name in {"eiger", "xp3", "xmap"}:
-            if detector_hung(device_name, snapshot):
-                return "Detector hangs"
-            parts = []
-            if BeamlineMonitorWidget._truthy_pv(pvs.get("capture")):
-                parts.append("capturing")
-            if BeamlineMonitorWidget._truthy_pv(pvs.get("acquire")):
-                parts.append("acquiring")
-            num_capture = BeamlineMonitorWidget._pv_value(pvs.get("num_capture"))
-            if num_capture not in (None, ""):
-                parts.append(f"num_capture={num_capture}")
-            file_name = BeamlineMonitorWidget._pv_value(pvs.get("file_name"))
-            if file_name not in (None, ""):
-                parts.append(f"file={file_name}")
-            detector_state = BeamlineMonitorWidget._pv_value(pvs.get("detector_state"))
-            if detector_state not in (None, ""):
-                parts.append(f"state={detector_state}")
-            write_status = BeamlineMonitorWidget._pv_value(pvs.get("write_status"))
-            if write_status not in (None, ""):
-                parts.append(f"write={write_status}")
-            return " | ".join(parts) if parts else "Detector online"
-
-        if device_name == "sample":
-            hung_axes = sample_hung_axes(snapshot)
-            x = BeamlineMonitorWidget._pv_value(pvs.get("x_piezo_readback"))
-            y = BeamlineMonitorWidget._pv_value(pvs.get("y_piezo_readback"))
-            z = BeamlineMonitorWidget._pv_value(pvs.get("z_readback"))
-            theta = BeamlineMonitorWidget._pv_value(pvs.get("theta_readback"))
-            busy = BeamlineMonitorWidget._pv_value(pvs.get("busy"))
-            parts = [
-                f"x={x}" if x is not None else None,
-                f"y={y}" if y is not None else None,
-                f"z={z}" if z is not None else None,
-                f"theta={theta}" if theta is not None else None,
-                "busy" if BeamlineMonitorWidget._truthy_pv(pvs.get("busy")) else None,
-            ]
-            if hung_axes:
-                parts.append(f"motor hangs: {', '.join(hung_axes)}")
-            if busy in (0, "0", False):
-                parts.append("ready")
-            return " | ".join(part for part in parts if part) or "Sample state unavailable"
-
-        if device_name == "bda":
-            x = BeamlineMonitorWidget._pv_value(pvs.get("x_readback"))
-            req = BeamlineMonitorWidget._pv_value(pvs.get("x_request"))
-            return f"x={x} | request={req}" if x is not None or req is not None else "BDA state unavailable"
-
-        if device_name == "fly_dwell":
-            value = BeamlineMonitorWidget._pv_value(pvs.get("value"))
-            return f"dwell={value}" if value is not None else "Dwell unavailable"
-
-        if device_name == "ring":
-            current = BeamlineMonitorWidget._pv_value(pvs.get("current"))
-            mode = BeamlineMonitorWidget._pv_value(pvs.get("operating_mode"))
-            parts = [
-                f"current={current}" if current is not None else None,
-                f"mode={mode}" if mode not in (None, "") else None,
-            ]
-            return " | ".join(part for part in parts if part) or "Ring state unavailable"
-
-        connected = sum(1 for pv in pvs.values() if isinstance(pv, Mapping) and pv.get("connected"))
-        return f"{connected}/{len(pvs)} PVs connected"
 
     @staticmethod
     def _latest_device_timestamp(device: Mapping[str, Any]) -> str:
@@ -621,30 +519,6 @@ class BeamlineMonitorWidget(QWidget):
                 return value
             return pv.get("value")
         return None
-
-    @staticmethod
-    def _truthy_pv(pv: Any) -> bool:
-        value = BeamlineMonitorWidget._pv_value(pv)
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            return normalized not in {"", "0", "false", "done", "idle", "off", "go"}
-        return bool(value)
-
-    @staticmethod
-    def _pv_at_least_one(pv: Any) -> bool:
-        value = BeamlineMonitorWidget._pv_value(pv)
-        try:
-            return float(value) >= 1
-        except Exception:
-            return False
-
-    @staticmethod
-    def _scanrecord_paused(pvs: Mapping[str, Any]) -> bool:
-        return (
-            BeamlineMonitorWidget._truthy_pv(pvs.get("scan_pause"))
-            or BeamlineMonitorWidget._pv_at_least_one(pvs.get("inner_client_wait"))
-            or BeamlineMonitorWidget._pv_at_least_one(pvs.get("outer_client_wait"))
-        )
 
     @staticmethod
     def _format_device_details(device: Mapping[str, Any]) -> str:
