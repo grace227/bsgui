@@ -50,6 +50,7 @@ class BeamlineMonitorWidget(QWidget):
         )
         self._detector_retries = max(1, int(detector_retries))
         self._last_recovery_at: dict[str, datetime] = {}
+        self._recovery_status_lines: list[str] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -106,6 +107,14 @@ class BeamlineMonitorWidget(QWidget):
         self._manifest_label.setWordWrap(True)
         self._manifest_label.setStyleSheet("color: #616161;")
         summary_layout.addWidget(self._manifest_label)
+
+        self._recovery_status_label = QLabel("Recovery status: --")
+        self._recovery_status_label.setWordWrap(True)
+        self._recovery_status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._recovery_status_label.setStyleSheet(
+            "background-color: #fafafa; border: 1px solid #e0e0e0; padding: 6px; color: #424242;"
+        )
+        summary_layout.addWidget(self._recovery_status_label)
 
         self._error_label = QLabel("")
         self._error_label.setWordWrap(True)
@@ -313,14 +322,24 @@ class BeamlineMonitorWidget(QWidget):
             self._set_error("No QServer controller available for detector recovery")
             return
 
-        result = controller._api.recover_detector(device_name, retries=self._detector_retries)
+        self._record_recovery_status(device_name, "Starting detector recovery")
+        result = controller._api.recover_detector(
+            device_name,
+            retries=self._detector_retries,
+            progress_callback=lambda message, name=device_name: self._record_recovery_status(name, message),
+        )
         reason = result.get("reason")
         recovered = bool(result.get("success"))
         if recovered:
             self._last_recovery_at[device_name] = datetime.now()
+            self._record_recovery_status(device_name, "Detector recovery complete")
             emit_status(f"{device_name} detector recovery commands sent")
             self._set_error(None)
         else:
+            self._record_recovery_status(
+                device_name,
+                f"Detector recovery failed: {reason or result.get('error') or 'unknown error'}",
+            )
             self._set_error(f"{device_name} recovery failed: {reason or result.get('error') or 'unknown error'}")
             emit_status(f"{device_name} detector recovery failed")
         self.refresh()
@@ -342,11 +361,21 @@ class BeamlineMonitorWidget(QWidget):
             previous = self._last_recovery_at.get(device_name)
             if previous is not None and now - previous < timedelta(seconds=self._detector_recovery_cooldown_seconds):
                 continue
-            result = controller._api.recover_detector(device_name, retries=self._detector_retries)
+            self._record_recovery_status(device_name, "Starting detector recovery")
+            result = controller._api.recover_detector(
+                device_name,
+                retries=self._detector_retries,
+                progress_callback=lambda message, name=device_name: self._record_recovery_status(name, message),
+            )
             if isinstance(result, Mapping) and result.get("success"):
                 self._last_recovery_at[device_name] = now
+                self._record_recovery_status(device_name, "Detector recovery complete")
                 recovered.append(device_name)
             else:
+                self._record_recovery_status(
+                    device_name,
+                    f"Detector recovery failed: {result.get('reason') or result.get('error') or 'unknown error'}",
+                )
                 failed.append(device_name)
 
         if recovered:
@@ -437,6 +466,12 @@ class BeamlineMonitorWidget(QWidget):
     def _device_is_hung(device: Mapping[str, Any]) -> bool:
         summary = str(device.get("summary") or "").strip().lower()
         return "hang" in summary
+
+    def _record_recovery_status(self, device_name: str, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._recovery_status_lines.append(f"[{timestamp}] {device_name}: {message}")
+        self._recovery_status_lines = self._recovery_status_lines[-8:]
+        self._recovery_status_label.setText("Recovery status:\n" + "\n".join(self._recovery_status_lines))
 
     @staticmethod
     def _device_summary(device: Mapping[str, Any]) -> str:

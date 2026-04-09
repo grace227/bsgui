@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections import deque
-from typing import Any, Dict, Iterator, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional
 
 from bluesky_queueserver_api.zmq import REManagerAPI
 from bluesky_queueserver_api import BFunc
@@ -268,12 +268,112 @@ class QServerAPI(REManagerAPI):
         *,
         retries: int = 1,
         timeout: float = 15.0,
+        pause_timeout: float = 10.0,
+        resume_timeout: float = 10.0,
+        settle_time_s: float = 0.2,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> Any:
-        return self.execute_function(
-            "recover_detector",
-            call_kwargs={"device_name": device_name, "retries": retries},
-            timeout=timeout,
-        )
+        paused_by_request = False
+        try:
+            if not self.isRE_paused():
+                self._emit_recovery_progress(progress_callback, "Pausing RE")
+                pause_response = self.scan_pause()
+                if isinstance(pause_response, Mapping) and not pause_response.get("success", False):
+                    self._emit_recovery_progress(progress_callback, "Failed to pause RE")
+                    return {
+                        "device": device_name,
+                        "success": False,
+                        "error": pause_response.get("msg") or "Failed to pause scan",
+                    }
+                if not self._wait_for_re_state("paused", timeout=pause_timeout):
+                    self._emit_recovery_progress(progress_callback, "Timed out waiting for RE pause")
+                    return {
+                        "device": device_name,
+                        "success": False,
+                        "error": "Timed out waiting for scan to pause",
+                    }
+                self._emit_recovery_progress(progress_callback, "RE paused")
+                paused_by_request = True
+
+            if settle_time_s > 0:
+                self._emit_recovery_progress(progress_callback, f"Settling for {settle_time_s:.1f}s")
+                time.sleep(settle_time_s)
+
+            self._emit_recovery_progress(progress_callback, f"Resetting detector {device_name}")
+            result = self.execute_function(
+                "recover_detector",
+                call_kwargs={"device_name": device_name, "retries": retries},
+                timeout=timeout,
+            )
+            if isinstance(result, Mapping):
+                return dict(result)
+            return {
+                "device": device_name,
+                "success": bool(result is not None),
+                "result": result,
+            }
+        finally:
+            if paused_by_request:
+                if settle_time_s > 0:
+                    self._emit_recovery_progress(progress_callback, f"Settling for {settle_time_s:.1f}s before resume")
+                    time.sleep(settle_time_s)
+                current_state = self._current_re_state()
+                if current_state == "paused":
+                    self._emit_recovery_progress(progress_callback, "Resuming RE")
+                    resume_response = self.scan_resume()
+                    if isinstance(resume_response, Mapping) and not resume_response.get("success", False):
+                        self._emit_recovery_progress(progress_callback, "Failed to resume RE")
+                        print(f"Failed to resume after detector recovery: {resume_response.get('msg')}")
+                    elif not self._wait_for_re_state_change("paused", timeout=resume_timeout):
+                        self._emit_recovery_progress(progress_callback, "Timed out waiting for RE resume")
+                        print("Timed out waiting for scan to resume after detector recovery")
+                    else:
+                        self._emit_recovery_progress(progress_callback, "RE resumed")
+                else:
+                    self._emit_recovery_progress(
+                        progress_callback,
+                        f"Skipping resume because RE state is {current_state or 'unknown'}",
+                    )
+
+    def _wait_for_re_state(self, expected_state: str, *, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() <= deadline:
+            state = self._current_re_state()
+            if state is None:
+                time.sleep(0.2)
+                continue
+            if state == expected_state:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def _wait_for_re_state_change(self, previous_state: str, *, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() <= deadline:
+            state = self._current_re_state()
+            if state is None:
+                time.sleep(0.2)
+                continue
+            if state != previous_state:
+                return True
+            time.sleep(0.2)
+        return False
+
+    def _current_re_state(self) -> str | None:
+        try:
+            state = self.status().get("re_state")
+        except Exception:
+            return None
+        return state if isinstance(state, str) else None
+
+    @staticmethod
+    def _emit_recovery_progress(progress_callback: Callable[[str], None] | None, message: str) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(message)
+        except Exception:
+            pass
 
     def get_plan_monitor_snapshot(
         self,
