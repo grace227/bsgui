@@ -6,11 +6,26 @@ the application.
 
 ## 1. What the GUI Is For
 
-`bsgui` combines three practical workflows:
+`bsgui` is a user-facing control and monitoring layer that bridges Bluesky
+RunEngine execution, Queue Server operations, and operator interaction at the
+beamline.
+
+In practice, the GUI sits between the user and the Bluesky runtime stack:
+
+- users inspect data, prepare scans, submit actions, and monitor progress
+- Queue Server manages queued plans and operational control requests
+- RunEngine and worker-side helpers execute scans and interact with devices
+
+The GUI also provides a basic level of beamline and scan monitoring so users
+can see queue state, active scan progress, device health summaries, and
+detector recovery status from one application.
+
+`bsgui` combines several practical workflows:
 
 - load and inspect beamline data products
 - prepare or submit Bluesky queue plans
-- watch the Queue Server and beamline state while scans are running
+- bridge queue and RunEngine actions into a usable operator interface
+- watch the Queue Server, scan state, and beamline state while scans are running
 
 At runtime, the exact tab set depends on the YAML config you start with. The
 default config focuses on `scan_setup` and `qserver_monitor`. The BNP config
@@ -94,7 +109,7 @@ flowchart LR
 
 The tabs you actually see depend on the config file.
 
-## Screenshots At A Glance
+## Rendered GUI Windows At A Glance
 
 ### Scan Setup
 
@@ -326,30 +341,3 @@ There are two user-facing status paths:
 
 If Queue Server connectivity is missing, many tabs still construct, but live
 actions and live polling will not work.
-
-## 11. Screenshots
-
-Current screenshots in the repo:
-
-- `docs/images/GUI_scanSetup.png`
-- `docs/images/GUI_queueMonitor.png`
-- `docs/images/GUI_beamlineMonitor.png`
-
-These correspond to the normal BNP operator flow:
-
-1. prepare a scan in `scan_setup`
-2. inspect and control execution in `qserver_monitor`
-3. diagnose hardware state or detector recovery in `beamline_monitor`
-
-Still missing if you want fuller visual coverage:
-
-1. Main window showing multiple tabs together
-2. `scan_parameter_viewer` with an opened HDF5 file and extracted parameters
-
-## 12. Suggested Future Documentation Additions
-
-- a BNP-specific operator guide with detector recovery examples
-- one page per beamline config describing required environment and expected tabs
-- screenshot-backed walkthroughs for common queue operations
-- troubleshooting notes for Queue Server connectivity, missing plans, or worker
-  environment state
