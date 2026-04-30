@@ -71,6 +71,13 @@ export QSERVER_ZMQ_CONTROL_ADDRESS=tcp://host:port
 export QSERVER_ZMQ_INFO_ADDRESS=tcp://host:port
 ```
 
+For the BNP workflow shown in the screenshots in this guide, the expected
+startup command is:
+
+```bash
+python main.py --config bsgui/config/bnp_widgets.yaml
+```
+
 ## 4. Main Window Layout
 
 The main window is a `QTabWidget`. Each tab is registered from code and then
@@ -86,6 +93,29 @@ flowchart LR
 ```
 
 The tabs you actually see depend on the config file.
+
+## Screenshots At A Glance
+
+### Scan Setup
+
+![Scan Setup Screenshot](./images/GUI_scanSetup.png)
+
+This screenshot shows the BNP layout where data loading, plan preparation, and
+queue status are visible in one workspace.
+
+### Queue Monitor
+
+![Queue Monitor Screenshot](./images/GUI_queueMonitor.png)
+
+This screenshot shows the operational queue view used after plans have been
+prepared and submitted.
+
+### Beamline Monitor
+
+![Beamline Monitor Screenshot](./images/GUI_beamlineMonitor.png)
+
+This screenshot shows the BNP monitor consuming the QServer hardware snapshot
+and exposing detector recovery feedback.
 
 ## 5. Scan Setup Tab
 
@@ -116,6 +146,16 @@ flowchart TB
 4. Let the plan editor map those values into plan parameters.
 5. Push the plan to Queue Server.
 
+For BNP specifically, a common path is:
+
+1. Load the XRF file and inspect the fluorescence map.
+2. Select the intended scan region on the shared canvas.
+3. Confirm mapped fields such as `x`, `y`, `z`, `stepsize_x`, `stepsize_y`,
+   `dwell`, and `theta`.
+4. Use `sync XYZ` or `sync XYZ + transform` if the current stage position or
+   theta transform must be applied before queue submission.
+5. Submit the resulting plan to QServer.
+
 ### Key pieces
 
 - XRF loader for file browsing and beamline data loading
@@ -124,6 +164,16 @@ flowchart TB
 - plan editor for plan kind selection and argument editing
 - queue status panel for quick server state visibility
 - console output panel for live QServer messages
+
+BNP-specific plan-editor behavior from `bnp_widgets.yaml` includes:
+
+- ROI key mapping for `samplename`, `x`, `y`, `z`, `dwell`, `stepsize_x`,
+  `stepsize_y`, and `theta`
+- `single` and `batch` plan modes
+- theta batch iteration support
+- QServer-backed `sync XYZ` and `sync XYZ + transform` actions
+
+![Scan Setup Detail](./images/GUI_scanSetup.png)
 
 ## 6. Queue Monitor Tab
 
@@ -158,6 +208,12 @@ sequenceDiagram
 This tab is where queue control happens. The beamline monitor is primarily a
 status and recovery view.
 
+In a BNP session, this tab usually follows `scan_setup`: once a plan is built,
+this is where you confirm that it entered the queue correctly and watch
+execution progress.
+
+![Queue Monitor Detail](./images/GUI_queueMonitor.png)
+
 ## 7. Beamline Monitor Tab
 
 The `beamline_monitor` tab is intended for plan-aware hardware status.
@@ -171,6 +227,10 @@ The `beamline_monitor` tab is intended for plan-aware hardware status.
 - per-device status rows
 - detector recovery controls when a detector advertises recovery support
 - a timestamped recovery status box
+
+In BNP, the intent is that device summaries, health states, and recovery
+actions are provided by QServer snapshot enrichment, with the GUI acting mainly
+as a renderer.
 
 ### Snapshot flow
 
@@ -217,6 +277,14 @@ sequenceDiagram
 
 The recovery status box in the widget is the user-visible log for this sequence.
 
+In practice, the BNP operator should use this tab to answer three questions:
+
+1. What is the active scan doing right now?
+2. Which device is unhealthy or waiting?
+3. If detector recovery starts, which step is it on: pause, reset, or resume?
+
+![Beamline Monitor Detail](./images/GUI_beamlineMonitor.png)
+
 ## 8. Scan Parameter Viewer Tab
 
 This tab is only present in configurations that enable it. Its purpose is
@@ -261,20 +329,22 @@ actions and live polling will not work.
 
 ## 11. Screenshots
 
-The repository does not currently ship captured GUI screenshots. To avoid stale
-or misleading images, this guide uses diagrams for the current structure and
-behavior.
+Current screenshots in the repo:
 
-Recommended screenshot set for future additions:
+- `docs/images/GUI_scanSetup.png`
+- `docs/images/GUI_queueMonitor.png`
+- `docs/images/GUI_beamlineMonitor.png`
 
-1. Main window with default `scan_setup` and `qserver_monitor` tabs visible
-2. `scan_setup` with a loaded XRF map, ROI overlay, and populated plan editor
-3. `qserver_monitor` with pending queue items and a running scan
-4. `beamline_monitor` showing device status rows and recovery status messages
-5. `scan_parameter_viewer` with an opened HDF5 file and extracted parameters
+These correspond to the normal BNP operator flow:
 
-If you add screenshots later, store them under `docs/images/` and link them
-from this section.
+1. prepare a scan in `scan_setup`
+2. inspect and control execution in `qserver_monitor`
+3. diagnose hardware state or detector recovery in `beamline_monitor`
+
+Still missing if you want fuller visual coverage:
+
+1. Main window showing multiple tabs together
+2. `scan_parameter_viewer` with an opened HDF5 file and extracted parameters
 
 ## 12. Suggested Future Documentation Additions
 

@@ -11,6 +11,36 @@ tabs and options.
 See the user guide in [docs/user-guide.md](./docs/user-guide.md) for a
 task-oriented walkthrough with diagrams.
 
+For the workflow shown in the screenshots below, start the BNP-oriented layout:
+
+```bash
+python main.py --config bsgui/config/bnp_widgets.yaml
+```
+
+## Screenshots
+
+### `scan_setup`
+
+![Scan Setup GUI](./docs/images/GUI_scanSetup.png)
+
+BNP usage: load an XRF map, select an ROI or point on the shared canvas, then
+use the plan editor and optional `sync XYZ` / `sync XYZ + transform` actions to
+prepare queue inputs.
+
+### `qserver_monitor`
+
+![Queue Monitor GUI](./docs/images/GUI_queueMonitor.png)
+
+BNP usage: inspect pending items, confirm the active plan state, and use queue
+or RunEngine controls from the same tab.
+
+### `beamline_monitor`
+
+![Beamline Monitor GUI](./docs/images/GUI_beamlineMonitor.png)
+
+BNP usage: watch the enriched hardware snapshot from QServer, confirm current
+activity, and follow detector recovery progress in the timestamped status area.
+
 ## What It Provides
 
 - `scan_setup`: load XRF and ptychography data, view it on a shared canvas, and
@@ -140,6 +170,12 @@ Combines:
 - queue status summary
 - console output panel
 
+In the BNP config, the plan editor also exposes scan-specific ROI key mapping,
+sample-theta batch support, and coordinate sync actions backed by QServer
+helper functions.
+
+![Scan Setup Tab](./docs/images/GUI_scanSetup.png)
+
 ### `qserver_monitor`
 
 Provides:
@@ -148,6 +184,8 @@ Provides:
 - pending queue table
 - running plan progress view
 - completed history export
+
+![Queue Monitor Tab](./docs/images/GUI_queueMonitor.png)
 
 ### `beamline_monitor`
 
@@ -158,6 +196,11 @@ Provides:
 - per-device status rows
 - detector auto-recovery trigger path
 - timestamped recovery progress log in the widget
+
+In the BNP config, this tab is designed to consume the QServer-enriched monitor
+snapshot rather than hardcoded GUI health logic.
+
+![Beamline Monitor Tab](./docs/images/GUI_beamlineMonitor.png)
 
 ## Running the Slack Bot
 
