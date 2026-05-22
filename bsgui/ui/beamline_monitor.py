@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -21,6 +22,17 @@ from PySide6.QtWidgets import (
 from .status_bus import emit_status
 
 
+@dataclass(frozen=True)
+class MonitorAction:
+    text: str
+    qserver_function: str
+    call_kwargs: Mapping[str, object] | None = None
+    user_group: str = "root"
+    timeout: float = 5.0
+    auto_monitor_summary: str | None = None
+    wait_for_inner_scan_finish: bool = False
+
+
 class BeamlineMonitorWidget(QWidget):
     """Status-oriented view of the current beamline monitoring snapshot."""
 
@@ -35,6 +47,7 @@ class BeamlineMonitorWidget(QWidget):
         detector_timeout_factor: float | None = None,
         sample_position_tolerance: float | None = None,
         detector_retries: int = 1,
+        actions: Optional[Sequence[object]] = None,
     ) -> None:
         super().__init__(parent)
         self._controller = None
@@ -51,6 +64,10 @@ class BeamlineMonitorWidget(QWidget):
         self._detector_retries = max(1, int(detector_retries))
         self._last_recovery_at: dict[str, datetime] = {}
         self._recovery_status_lines: list[str] = []
+        self._actions = self._normalize_actions(actions)
+        self._action_buttons: dict[str, QPushButton] = {}
+        self._auto_monitor_actions_enabled: dict[str, bool] = {}
+        self._auto_monitor_action_latched: dict[str, bool] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -64,6 +81,20 @@ class BeamlineMonitorWidget(QWidget):
         self._title_label.setStyleSheet("font-weight: 600; font-size: 15px;")
         header.addWidget(self._title_label)
         header.addStretch(1)
+
+        for action in self._actions:
+            button = QPushButton(action.text)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            if action.auto_monitor_summary:
+                button.setCheckable(True)
+                button.setToolTip("Enable automatic action when the monitor reports the configured condition")
+                button.toggled.connect(
+                    lambda checked, action=action: self._toggle_auto_monitor_action(action, checked)
+                )
+            else:
+                button.clicked.connect(lambda _checked=False, action=action: self._run_monitor_action(action))
+            self._action_buttons[action.text] = button
+            header.addWidget(button)
 
         self._detector_monitor_button = QPushButton("Detector Monitor")
         self._detector_monitor_button.setCheckable(True)
@@ -162,6 +193,7 @@ class BeamlineMonitorWidget(QWidget):
                 self._set_empty_state("Beamline snapshot unavailable", error=str(snapshot))
                 return
 
+            self._run_auto_monitor_actions(snapshot)
             if self._detector_monitor_enabled:
                 self._run_detector_monitor(snapshot)
             self._render_snapshot(snapshot)
@@ -179,8 +211,15 @@ class BeamlineMonitorWidget(QWidget):
         self._update_timer_state()
         self.refresh()
 
+    def _toggle_auto_monitor_action(self, action: MonitorAction, checked: bool) -> None:
+        self._auto_monitor_actions_enabled[action.text] = bool(checked)
+        if not checked:
+            self._auto_monitor_action_latched[action.text] = False
+        self._update_timer_state()
+        self.refresh()
+
     def _update_timer_state(self) -> None:
-        if self._auto_refresh or self._detector_monitor_enabled:
+        if self._auto_refresh or self._detector_monitor_enabled or any(self._auto_monitor_actions_enabled.values()):
             self._timer.start()
         else:
             self._timer.stop()
@@ -323,11 +362,7 @@ class BeamlineMonitorWidget(QWidget):
             return
 
         self._record_recovery_status(device_name, "Starting detector recovery")
-        result = controller._api.recover_detector(
-            device_name,
-            retries=self._detector_retries,
-            progress_callback=lambda message, name=device_name: self._record_recovery_status(name, message),
-        )
+        result = self._execute_detector_recovery(device_name)
         reason = result.get("reason")
         recovered = bool(result.get("success"))
         if recovered:
@@ -362,11 +397,7 @@ class BeamlineMonitorWidget(QWidget):
             if previous is not None and now - previous < timedelta(seconds=self._detector_recovery_cooldown_seconds):
                 continue
             self._record_recovery_status(device_name, "Starting detector recovery")
-            result = controller._api.recover_detector(
-                device_name,
-                retries=self._detector_retries,
-                progress_callback=lambda message, name=device_name: self._record_recovery_status(name, message),
-            )
+            result = self._execute_detector_recovery(device_name)
             if isinstance(result, Mapping) and result.get("success"):
                 self._last_recovery_at[device_name] = now
                 self._record_recovery_status(device_name, "Detector recovery complete")
@@ -382,6 +413,23 @@ class BeamlineMonitorWidget(QWidget):
             emit_status(f"Detector monitor sent recovery for {', '.join(recovered)}")
         if failed:
             emit_status(f"Detector monitor failed recovery for {', '.join(failed)}")
+
+    def _execute_detector_recovery(self, device_name: str) -> Mapping[str, Any]:
+        controller = self._controller
+        if controller is None:
+            return {"device": device_name, "success": False, "error": "No QServer controller available"}
+        result = controller._api.execute_function_while_paused(
+            "recover_detector",
+            call_kwargs={"device_name": device_name, "retries": self._detector_retries},
+            progress_callback=lambda message, name=device_name: self._record_recovery_status(name, message),
+            result_context=device_name,
+            run_message=f"Resetting detector {device_name}",
+        )
+        return dict(result) if isinstance(result, Mapping) else {
+            "device": device_name,
+            "success": bool(result is not None),
+            "result": result,
+        }
 
     def _populate_device_overview(self, devices: Mapping[str, Any], *, snapshot: Mapping[str, Any] | None = None) -> None:
         while self._device_overview_layout.count():
@@ -472,6 +520,99 @@ class BeamlineMonitorWidget(QWidget):
         self._recovery_status_lines.append(f"[{timestamp}] {device_name}: {message}")
         self._recovery_status_lines = self._recovery_status_lines[-8:]
         self._recovery_status_label.setText("Recovery status:\n" + "\n".join(self._recovery_status_lines))
+
+    def _run_monitor_action(self, action: MonitorAction) -> None:
+        controller = self._controller
+        if controller is None:
+            self._set_error(f"No QServer controller available for {action.text}")
+            return
+        self._record_recovery_status(action.text, "Starting action")
+        emit_status(f"Running {action.text}")
+        result = controller._api.execute_function_while_paused(
+            action.qserver_function,
+            call_kwargs=action.call_kwargs,
+            user_group=action.user_group,
+            timeout=action.timeout,
+            progress_callback=lambda message, name=action.text: self._record_recovery_status(name, message),
+            result_context=action.text,
+            run_message=f"Running {action.text}",
+            wait_for_inner_scan_finish=action.wait_for_inner_scan_finish,
+        )
+        if isinstance(result, Mapping) and not result.get("success", True):
+            self._record_recovery_status(
+                action.text,
+                f"Action failed: {result.get('reason') or result.get('error') or 'unknown error'}",
+            )
+            self._set_error(
+                f"{action.text} failed: {result.get('reason') or result.get('error') or 'unknown error'}"
+            )
+            emit_status(f"{action.text} failed")
+        else:
+            self._record_recovery_status(action.text, "Action complete")
+            self._set_error(None)
+            emit_status(f"{action.text} complete")
+        self.refresh()
+
+    def _run_auto_monitor_actions(self, snapshot: Mapping[str, Any]) -> None:
+        for action in self._actions:
+            if not self._auto_monitor_actions_enabled.get(action.text, False):
+                continue
+            triggered = self._auto_monitor_action_triggered(action, snapshot)
+            if not triggered:
+                self._auto_monitor_action_latched[action.text] = False
+                continue
+            if self._auto_monitor_action_latched.get(action.text, False):
+                continue
+            self._auto_monitor_action_latched[action.text] = True
+            self._run_monitor_action(action)
+
+    @staticmethod
+    def _auto_monitor_action_triggered(action: MonitorAction, snapshot: Mapping[str, Any]) -> bool:
+        summary_match = action.auto_monitor_summary
+        if not isinstance(summary_match, str) or not summary_match.strip():
+            return False
+        devices = snapshot.get("devices")
+        if not isinstance(devices, Mapping):
+            return False
+        sample = devices.get("sample")
+        if not isinstance(sample, Mapping):
+            return False
+        summary = str(sample.get("summary") or "").lower()
+        return summary_match.strip().lower() in summary
+
+    @staticmethod
+    def _normalize_actions(config: Optional[Sequence[object]]) -> list[MonitorAction]:
+        actions: list[MonitorAction] = []
+        if not isinstance(config, Sequence) or isinstance(config, (str, bytes)):
+            return actions
+        for entry in config:
+            if not isinstance(entry, Mapping):
+                continue
+            text = entry.get("text")
+            function_name = entry.get("qserver_function")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            if not isinstance(function_name, str) or not function_name.strip():
+                continue
+            call_kwargs = entry.get("call_kwargs") if isinstance(entry.get("call_kwargs"), Mapping) else None
+            user_group = entry.get("user_group") if isinstance(entry.get("user_group"), str) else "root"
+            timeout = float(entry.get("timeout", 5.0))
+            auto_monitor_summary = (
+                entry.get("auto_monitor_summary") if isinstance(entry.get("auto_monitor_summary"), str) else None
+            )
+            wait_for_inner_scan_finish = bool(entry.get("wait_for_inner_scan_finish", False))
+            actions.append(
+                MonitorAction(
+                    text=text.strip(),
+                    qserver_function=function_name.strip(),
+                    call_kwargs=call_kwargs,
+                    user_group=user_group,
+                    timeout=timeout,
+                    auto_monitor_summary=auto_monitor_summary.strip() if auto_monitor_summary else None,
+                    wait_for_inner_scan_finish=wait_for_inner_scan_finish,
+                )
+            )
+        return actions
 
     @staticmethod
     def _device_summary(device: Mapping[str, Any]) -> str:
