@@ -38,6 +38,7 @@ class DataVisualizationWidget(QWidget):
         layout.insertWidget(0, self._toolbar)
         self._toolbar.roiDrawn.connect(self.roiDrawn.emit)
         self._toolbar.pointSelected.connect(self.canvasPointSelected.emit)
+        self._toolbar.colorLogScaleChanged.connect(self._set_color_log_scale)
 
     @property
     def plot_canvas(self) -> PlotCanvasWidget:
@@ -100,7 +101,17 @@ class DataVisualizationWidget(QWidget):
                 title = source_path.name
             elif not title:
                 title = "Dataset"
-            self._canvas.imshow(xval, yval, zval, title=title, xlabel=xlabel, ylabel=ylabel, color_map = colormap)
+            self._canvas.imshow(
+                xval,
+                yval,
+                zval,
+                title=title,
+                xlabel=xlabel,
+                ylabel=ylabel,
+                color_map=colormap,
+                color_log_scale=self._toolbar.color_log_scale_enabled,
+            )
+            self._toolbar.set_color_log_scale_checked(self._canvas.color_log_scale)
             self._toolbar.sync_view_state()
             self._reset_toolbar()
 
@@ -109,6 +120,10 @@ class DataVisualizationWidget(QWidget):
     def show_message(self, message: str) -> None:
         self._last_payload = None
         self._canvas.show_message(message)
+
+    def _set_color_log_scale(self, enabled: bool) -> None:
+        applied = self._canvas.set_color_log_scale(enabled)
+        self._toolbar.set_color_log_scale_checked(applied)
 
     def _reset_toolbar(self) -> None:
         self._toolbar.drawRectangleAction.setChecked(False)
