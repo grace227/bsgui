@@ -1,169 +1,210 @@
 # Beamline GUI and Queue Monitoring Toolkit
 
-`bsgui` is a PySide6-based toolkit for beamline data inspection, Bluesky Queue
-Server monitoring, and plan preparation. The repository includes a desktop GUI
-application, reusable widgets that can be embedded elsewhere, and a Slack bot
-for remote queue/scan visibility.
+`bsgui` is a PySide6 desktop application for microscopy data inspection, Bluesky
+Queue Server control, and beamline monitoring. The repository also includes a
+Slack bot for remote queue visibility.
 
-## What the Repository Provides
+The GUI is assembled from reusable widgets and YAML configuration files, so the
+same application shell can be reused across multiple beamlines with different
+tabs and options.
 
-### Desktop GUI
+See the user guide in [docs/user-guide.md](./docs/user-guide.md) for a
+task-oriented walkthrough with diagrams.
 
-The GUI entry point is [`main.py`](./main.py). It builds a tabbed application
-from registered widgets and YAML configuration files in
-[`bsgui/config`](./bsgui/config).
+For the workflow shown in the screenshots below, start the BNP-oriented layout:
 
-The default application provides two tabs:
+```bash
+python main.py --config bsgui/config/bnp_widgets.yaml
+```
 
-- `scan_setup`: a shared data-viewer workspace for microscopy datasets
-- `qserver_monitor`: a queue monitor for Bluesky Queue Server
+## Screenshots
 
-### Data Visualization and Scan Setup
+### `scan_setup`
 
-The scan-setup tab combines several pieces from [`bsgui/ui`](./bsgui/ui):
+![Scan Setup GUI](./docs/images/GUI_scanSetup.png)
 
-- `XRFLoaderWidget`: browse and load XRF datasets
-- `PtychographyLoaderWidget`: browse and load ptychography datasets
-- `PlotCanvasWidget`: Matplotlib-backed plotting canvas
-- `CustomToolbar`: canvas tools for ROI selection, point selection, and
-  `Invert Y`
-- `PlanEditorWidget`: build queueable plans and apply ROI/point selections to
-  plan parameters
-- `QueueServerStatusWidget`: live queue-server status summary
-- `QServerConsoleWidget`: live console output pane
+BNP usage: load an XRF map, select an ROI or point on the shared canvas, then
+use the plan editor and optional `sync XYZ` / `sync XYZ + transform` actions to
+prepare queue inputs.
 
-Notable viewer functionality:
+### `qserver_monitor`
 
-- shared plotting canvas across loader widgets
-- `imshow`-based 2D dataset display
-- ROI drawing and removal on the canvas
-- point picking on the canvas
-- invert-y view toggle in the custom toolbar
-- status-bar messages routed through a shared status bus
+![Queue Monitor GUI](./docs/images/GUI_queueMonitor.png)
 
-### Queue Monitoring and Planning
+BNP usage: inspect pending items, confirm the active plan state, and use queue
+or RunEngine controls from the same tab.
 
-The queue-monitor side of the repository includes:
+### `beamline_monitor`
 
-- `QServerAPI` and `QServerController` in [`bsgui/core`](./bsgui/core) for ZMQ
-  communication and polling
-- `QueueMonitorWidget` for viewing queue, active item, and history
-- queue item normalization helpers in `queue_item_utils.py`
-- configurable plan-editor-to-queue integration through ROI key mapping
+![Beamline Monitor GUI](./docs/images/GUI_beamlineMonitor.png)
 
-### Slack Bot
+BNP usage: watch the enriched hardware snapshot from QServer, confirm current
+activity, and follow detector recovery progress in the timestamped status area.
 
-[`bs_slack_bot`](./bs_slack_bot) provides a Socket Mode Slack bot that can:
+## What It Provides
 
-- report queue status
-- report queue history
-- report scan progress
-- watch console activity and raise stall alerts
-
-Its entry point is [`bs_slack_bot/slackbot.py`](./bs_slack_bot/slackbot.py).
+- `scan_setup`: load XRF and ptychography data, view it on a shared canvas, and
+  prepare plan inputs from ROIs or selected points
+- `qserver_monitor`: inspect queue state, active plan progress, and queue
+  history, and issue queue or RunEngine actions
+- `beamline_monitor`: show a plan-aware hardware snapshot, activity summary,
+  device health, and detector recovery status
+- `scan_parameter_viewer`: browse Bluesky HDF5 files and inspect extracted scan
+  metadata
+- `bs_slack_bot`: post queue and console status to Slack
 
 ## Repository Layout
 
 ```text
 bsgui/
-  config/        YAML configuration and widget registration defaults
-  core/          non-GUI controllers, queue API, parsing helpers
-  ui/            PySide6 widgets and plotting components
-bs_slack_bot/    Slack bot runtime, handlers, and monitor service
-main.py          desktop GUI entry point
-requirements.txt dependency list
+  config/        YAML app and tab configuration
+  core/          QServer API/controller and shared logic
+  ui/            PySide6 widgets
+bs_slack_bot/    Slack bot runtime
+docs/            User-facing documentation
+main.py          Desktop GUI entry point
+requirements.txt Python dependencies
 ```
 
 ## Installation
-
-Create an environment and install the dependencies listed in
-[`requirements.txt`](./requirements.txt):
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-If you use YAML configuration files, also install `PyYAML`:
-
-```bash
 pip install PyYAML
 ```
 
 ## Running the GUI
 
-Launch the default application:
+Launch the default tab set:
 
 ```bash
 python main.py
 ```
 
-Run a specific set of tabs:
+Launch a specific set of tabs:
 
 ```bash
 python main.py scan_setup qserver_monitor
+python main.py scan_setup qserver_monitor beamline_monitor
 ```
 
 Use a beamline-specific configuration:
 
 ```bash
+python main.py --beamline bnp
 python main.py --beamline s2idd
 python main.py --beamline s2ide
 python main.py --beamline isn
 ```
 
-Or provide an explicit config file:
+Use an explicit config file:
 
 ```bash
 python main.py --config bsgui/config/widgets.yaml
+python main.py --config bsgui/config/bnp_widgets.yaml
 ```
 
-You can also inject additional dataset search paths from the command line:
+Add extra data search paths:
 
 ```bash
 python main.py --data-path /path/to/xrf --data-path /path/to/ptycho
 ```
 
-## Configuration
+## Queue Server Setup
 
-The GUI is driven by YAML files in [`bsgui/config`](./bsgui/config). These files
-control:
-
-- application title and window size
-- which tabs are shown
-- loader enable/disable flags
-- search paths and file patterns for loaders
-- plan-editor kinds, parameter overrides, and ROI-to-plan key mapping
-- queue-status labels and polling intervals
-- console-output options
-- grid placement of loader panels, canvas, plan editor, and status widgets
-
-The default examples are:
-
-- [`bsgui/config/widgets.yaml`](./bsgui/config/widgets.yaml)
-- [`bsgui/config/s2idd_widgets.yaml`](./bsgui/config/s2idd_widgets.yaml)
-- [`bsgui/config/s2ide_widgets.yaml`](./bsgui/config/s2ide_widgets.yaml)
-- [`bsgui/config/isn_widgets.yaml`](./bsgui/config/isn_widgets.yaml)
-
-## Queue Server Environment
-
-Live Queue Server features expect these environment variables:
+Live queue and monitor features require Queue Server addresses:
 
 ```bash
 export QSERVER_ZMQ_CONTROL_ADDRESS=tcp://host:port
 export QSERVER_ZMQ_INFO_ADDRESS=tcp://host:port
 ```
 
-The widget registration code will also look for a local `.env` file if those
-variables are not already set.
+If those variables are not set, the application also looks for a local `.env`
+file.
+
+## Configuration
+
+Application behavior is driven by YAML files in [bsgui/config](./bsgui/config).
+Common settings include:
+
+- app title and window size
+- enabled tabs
+- loader search paths and file patterns
+- plan-editor ROI key mapping and sync buttons
+- queue monitor polling interval and table columns
+- beamline monitor polling and detector recovery options
+- scan-setup grid layout
+
+Useful examples:
+
+- [bsgui/config/widgets.yaml](./bsgui/config/widgets.yaml)
+- [bsgui/config/bnp_widgets.yaml](./bsgui/config/bnp_widgets.yaml)
+- [bsgui/config/s2idd_widgets.yaml](./bsgui/config/s2idd_widgets.yaml)
+- [bsgui/config/s2ide_widgets.yaml](./bsgui/config/s2ide_widgets.yaml)
+- [bsgui/config/isn_widgets.yaml](./bsgui/config/isn_widgets.yaml)
+
+## GUI Architecture
+
+```mermaid
+flowchart LR
+    User[Beamline User] --> GUI[bsgui Desktop GUI]
+    GUI --> Controller[QServerController]
+    Controller --> API[QServerAPI]
+    API --> ZMQ[Bluesky Queue Server ZMQ]
+    ZMQ --> Worker[Worker Environment]
+    Worker --> Devices[Beamline Devices and PVs]
+```
+
+## Primary Widgets
+
+### `scan_setup`
+
+Combines:
+
+- XRF loader
+- ptychography loader
+- shared Matplotlib canvas
+- plan editor
+- queue status summary
+- console output panel
+
+In the BNP config, the plan editor also exposes scan-specific ROI key mapping,
+sample-theta batch support, and coordinate sync actions backed by QServer
+helper functions.
+
+![Scan Setup Tab](./docs/images/GUI_scanSetup.png)
+
+### `qserver_monitor`
+
+Provides:
+
+- start, stop, pause, resume, abort, and clear queue actions
+- pending queue table
+- running plan progress view
+- completed history export
+
+![Queue Monitor Tab](./docs/images/GUI_queueMonitor.png)
+
+### `beamline_monitor`
+
+Provides:
+
+- current activity summary
+- manifest path and snapshot timestamp
+- per-device status rows
+- detector auto-recovery trigger path
+- timestamped recovery progress log in the widget
+
+In the BNP config, this tab is designed to consume the QServer-enriched monitor
+snapshot rather than hardcoded GUI health logic.
+
+![Beamline Monitor Tab](./docs/images/GUI_beamlineMonitor.png)
 
 ## Running the Slack Bot
 
-The Slack bot reads settings from environment variables or from a local
-`run.sh` file used by the bot settings loader.
-
-Required settings:
+Required environment:
 
 ```bash
 export SLACK_BOT_TOKEN=xoxb-...
@@ -172,7 +213,7 @@ export QSERVER_ZMQ_CONTROL_ADDRESS=tcp://host:port
 export QSERVER_ZMQ_INFO_ADDRESS=tcp://host:port
 ```
 
-Optional settings:
+Optional environment:
 
 ```bash
 export SLACK_ALERT_CHANNEL=C12345678
@@ -180,7 +221,7 @@ export SLACK_CONSOLE_STALL_SECONDS=1800
 export SLACK_CONSOLE_WATCHDOG_POLL_SECONDS=15
 ```
 
-Start the bot with:
+Start the bot:
 
 ```bash
 python bs_slack_bot/slackbot.py
@@ -188,16 +229,14 @@ python bs_slack_bot/slackbot.py
 
 ## Reuse as a Library
 
-The main reusable exports are available from:
+Reusable exports are available from:
 
-- [`bsgui/ui/__init__.py`](./bsgui/ui/__init__.py) for widget classes
-- [`bsgui/core/__init__.py`](./bsgui/core/__init__.py) for controller/data
-  helpers
-- [`bsgui/widgets.py`](./bsgui/widgets.py) as a compatibility shim for older
-  imports
+- [bsgui/ui/__init__.py](./bsgui/ui/__init__.py)
+- [bsgui/core/__init__.py](./bsgui/core/__init__.py)
+- [bsgui/widgets.py](./bsgui/widgets.py)
 
-## Security Note
+## Security
 
-Do not commit Slack tokens, Queue Server credentials, or beamline-specific
-secrets into this repository. Keep them in environment variables, a local
-untracked `.env`, or another secret-management system.
+Do not commit Slack tokens, Queue Server addresses tied to restricted networks,
+or other beamline secrets. Keep them in environment variables or an untracked
+local `.env`.

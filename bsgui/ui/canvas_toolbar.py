@@ -10,15 +10,21 @@ from .status_bus import emit_status
 class CustomToolbar(NavigationToolbar):
     roiDrawn = Signal(dict)
     pointSelected = Signal(dict)
+    colorLogScaleChanged = Signal(bool)
     def __init__(self, canvas, parent):
         super().__init__(canvas, parent)
         self.parent = parent
 
         self._invert_y_enabled = False
+        self._color_log_scale_enabled = False
 
         self.invertYAction = QAction("Invert Y", self)
         self.invertYAction.setCheckable(True)
         self.addAction(self.invertYAction)
+
+        self.colorLogScaleAction = QAction("Log Scale", self)
+        self.colorLogScaleAction.setCheckable(True)
+        self.addAction(self.colorLogScaleAction)
 
         # Configure the ROI actions
         self.drawRectangleAction = QAction("Add ROI", self)
@@ -37,6 +43,7 @@ class CustomToolbar(NavigationToolbar):
 
         # Connect the action trigger to enable/disable rectangle drawing
         self.invertYAction.triggered.connect(self.toggle_invert_y)
+        self.colorLogScaleAction.triggered.connect(self.toggle_color_log_scale)
         self.drawRectangleAction.triggered.connect(self.toggle_rectangle_drawing)
         self.removeRectangleAction.triggered.connect(self.toggle_rectangle_remove)
         self.selectPointAction.triggered.connect(self.toggle_point_selection)
@@ -71,6 +78,18 @@ class CustomToolbar(NavigationToolbar):
     def toggle_invert_y(self):
         self._invert_y_enabled = self.invertYAction.isChecked()
         self.sync_view_state()
+
+    def toggle_color_log_scale(self):
+        self._color_log_scale_enabled = self.colorLogScaleAction.isChecked()
+        self.colorLogScaleChanged.emit(self._color_log_scale_enabled)
+
+    @property
+    def color_log_scale_enabled(self):
+        return self._color_log_scale_enabled
+
+    def set_color_log_scale_checked(self, checked):
+        self._color_log_scale_enabled = bool(checked)
+        self.colorLogScaleAction.setChecked(self._color_log_scale_enabled)
 
     def sync_view_state(self):
         axes = self.canvas.figure.gca()

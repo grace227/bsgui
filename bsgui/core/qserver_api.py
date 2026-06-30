@@ -273,45 +273,86 @@ class QServerAPI(REManagerAPI):
         settle_time_s: float = 0.2,
         progress_callback: Callable[[str], None] | None = None,
     ) -> Any:
+        return self.execute_function_while_paused(
+            "recover_detector",
+            call_kwargs={"device_name": device_name, "retries": retries},
+            timeout=timeout,
+            pause_timeout=pause_timeout,
+            resume_timeout=resume_timeout,
+            settle_time_s=settle_time_s,
+            progress_callback=progress_callback,
+            result_context=device_name,
+            start_message="Pausing RE",
+            run_message=f"Resetting detector {device_name}",
+        )
+
+    def execute_function_while_paused(
+        self,
+        function_name: str,
+        *,
+        call_kwargs: Optional[Mapping[str, Any]] = None,
+        user_group: str = "root",
+        timeout: float = 15.0,
+        pause_timeout: float = 10.0,
+        resume_timeout: float = 10.0,
+        settle_time_s: float = 0.2,
+        progress_callback: Callable[[str], None] | None = None,
+        result_context: str | None = None,
+        start_message: str = "Pausing RE",
+        run_message: str | None = None,
+        wait_for_inner_scan_finish: bool = False,
+        inner_scan_timeout: float = 30.0,
+    ) -> Any:
         paused_by_request = False
         try:
             if not self.isRE_paused():
-                self._emit_recovery_progress(progress_callback, "Pausing RE")
+                self._emit_recovery_progress(progress_callback, start_message)
                 pause_response = self.scan_pause()
                 if isinstance(pause_response, Mapping) and not pause_response.get("success", False):
                     self._emit_recovery_progress(progress_callback, "Failed to pause RE")
-                    return {
-                        "device": device_name,
+                    result: Dict[str, Any] = {
                         "success": False,
                         "error": pause_response.get("msg") or "Failed to pause scan",
                     }
+                    if result_context is not None:
+                        result["device"] = result_context
+                    return result
                 if not self._wait_for_re_state("paused", timeout=pause_timeout):
                     self._emit_recovery_progress(progress_callback, "Timed out waiting for RE pause")
-                    return {
-                        "device": device_name,
-                        "success": False,
-                        "error": "Timed out waiting for scan to pause",
-                    }
+                    result = {"success": False, "error": "Timed out waiting for scan to pause"}
+                    if result_context is not None:
+                        result["device"] = result_context
+                    return result
                 self._emit_recovery_progress(progress_callback, "RE paused")
                 paused_by_request = True
+
+            if wait_for_inner_scan_finish:
+                self._emit_recovery_progress(progress_callback, "Waiting for inner scan to finish")
+                if not self._wait_for_inner_scan_finish(timeout=inner_scan_timeout):
+                    self._emit_recovery_progress(progress_callback, "Timed out waiting for inner scan to finish")
+                    result = {"success": False, "error": "Timed out waiting for inner scan to finish"}
+                    if result_context is not None:
+                        result["device"] = result_context
+                    return result
+                self._emit_recovery_progress(progress_callback, "Inner scan finished")
 
             if settle_time_s > 0:
                 self._emit_recovery_progress(progress_callback, f"Settling for {settle_time_s:.1f}s")
                 time.sleep(settle_time_s)
 
-            self._emit_recovery_progress(progress_callback, f"Resetting detector {device_name}")
+            self._emit_recovery_progress(progress_callback, run_message or f"Running {function_name}")
             result = self.execute_function(
-                "recover_detector",
-                call_kwargs={"device_name": device_name, "retries": retries},
+                function_name,
+                call_kwargs=call_kwargs,
+                user_group=user_group,
                 timeout=timeout,
             )
             if isinstance(result, Mapping):
                 return dict(result)
-            return {
-                "device": device_name,
-                "success": bool(result is not None),
-                "result": result,
-            }
+            payload = {"success": bool(result is not None), "result": result}
+            if result_context is not None:
+                payload["device"] = result_context
+            return payload
         finally:
             if paused_by_request:
                 if settle_time_s > 0:
@@ -358,6 +399,42 @@ class QServerAPI(REManagerAPI):
                 return True
             time.sleep(0.2)
         return False
+
+    def _wait_for_inner_scan_finish(self, *, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() <= deadline:
+            if self._inner_scan_finished():
+                return True
+            time.sleep(0.2)
+        return False
+
+    def _inner_scan_finished(self) -> bool:
+        try:
+            snapshot = self.get_active_plan_monitor_snapshot()
+        except Exception:
+            return False
+        if not isinstance(snapshot, Mapping):
+            return False
+        devices = snapshot.get("devices")
+        if not isinstance(devices, Mapping):
+            return False
+        scanrecord = devices.get("scanrecord")
+        if not isinstance(scanrecord, Mapping):
+            return False
+        pvs = scanrecord.get("pvs")
+        if not isinstance(pvs, Mapping):
+            return False
+        pv = pvs.get("inner.execute_scan")
+        if not isinstance(pv, Mapping):
+            return False
+        value = pv.get("value")
+        if value is None:
+            value = pv.get("char_value")
+        try:
+            return float(value) == 0.0
+        except Exception:
+            text = str(value).strip().lower()
+            return text in {"0", "idle", "done", "false", "off"}
 
     def _current_re_state(self) -> str | None:
         try:
