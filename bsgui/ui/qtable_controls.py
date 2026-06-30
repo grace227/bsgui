@@ -31,6 +31,7 @@ from .status_bus import emit_status
 QUEUE_ITEM_UID_ROLE = Qt.ItemDataRole.UserRole + 1
 QUEUE_ITEM_STATE_ROLE = Qt.ItemDataRole.UserRole + 2
 QUEUE_ITEM_COLUMN_ROLE = Qt.ItemDataRole.UserRole + 3
+QUEUE_ITEM_RAW_ROLE = Qt.ItemDataRole.UserRole + 5
 QUEUE_ITEM_STATE_PENDING = "pending"
 
 
@@ -328,7 +329,6 @@ class QueueTableCursorController(QObject):
         menu = QMenu(table)
         edit_action = menu.addAction("Edit Plan Parameters")
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
-        print(f"chosen: {chosen}, edit_action: {edit_action}")
         if chosen == edit_action:
             self._open_parameter_editor(row)
 
@@ -346,15 +346,21 @@ class QueueTableCursorController(QObject):
 
         controller = self._controller
         api = getattr(controller, "_api", None) if controller else None
-        if api is None:
+        if controller is None:
             emit_status("Queue controller unavailable.")
             return
 
-        try:
-            raw_item = api.fetch_from_queue_history(uid)
-        except Exception:  # pragma: no cover - runtime safeguard
-            emit_status("Failed to fetch queue item details.")
+        raw_item = self._lookup_row_raw_item(row)
+        if raw_item is None and api is None:
+            emit_status("Queue controller unavailable.")
             return
+
+        if raw_item is None:
+            try:
+                raw_item = api.fetch_from_queue_history(uid)
+            except Exception:  # pragma: no cover - runtime safeguard
+                emit_status("Failed to fetch queue item details.")
+                return
         if not isinstance(raw_item, Mapping):
             emit_status("Queue item payload unavailable.")
             return
@@ -411,6 +417,21 @@ class QueueTableCursorController(QObject):
             message = response.get("msg", message) or message
 
         emit_status(message if success else message or "Queue item update rejected.")
+
+    def _lookup_row_raw_item(self, row: int) -> Optional[Mapping[str, object]]:
+        table = self._table
+        if table is None or not Shiboken.isValid(table):
+            return None
+        if row < 0 or row >= table.rowCount():
+            return None
+        for column in range(table.columnCount()):
+            item = table.item(row, column)
+            if item is None:
+                continue
+            raw_item = item.data(QUEUE_ITEM_RAW_ROLE)
+            if isinstance(raw_item, Mapping):
+                return raw_item
+        return None
 
     @staticmethod
     def _extract_plan_name(item: Mapping[str, object]) -> str:

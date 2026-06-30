@@ -503,6 +503,11 @@ def register_default_widgets(
         )
 
     beamline_monitor_cfg = beamline_monitor_options or {}
+    beamline_monitor_key = str(beamline_monitor_cfg.get("widget_key", "beamline_monitor"))
+    beamline_monitor_title = str(beamline_monitor_cfg.get("title", "Beamline Monitor"))
+    beamline_monitor_description = str(
+        beamline_monitor_cfg.get("description", "View the active plan's beamline hardware snapshot.")
+    )
 
     def make_beamline_monitor() -> QWidget:
         controller = ensure_controller()
@@ -521,9 +526,18 @@ def register_default_widgets(
 
     target.register(
         WidgetDescriptor(
-            key="beamline_monitor",
-            title="Beamline Monitor",
-            description="View the active plan's beamline hardware snapshot.",
+            key=beamline_monitor_key,
+            title=beamline_monitor_title,
+            description=beamline_monitor_description,
             factory=make_beamline_monitor,
         )
     )
+    if beamline_monitor_key != "beamline_monitor":
+        target.register(
+            WidgetDescriptor(
+                key="beamline_monitor",
+                title=beamline_monitor_title,
+                description=beamline_monitor_description,
+                factory=make_beamline_monitor,
+            )
+        )

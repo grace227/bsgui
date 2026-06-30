@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QHeaderView
 from .qtable_controls import (
     QueueTableCursorController,
     QUEUE_ITEM_COLUMN_ROLE,
+    QUEUE_ITEM_RAW_ROLE,
     export_qtable_to_csv,
 )
 from .qserver_planning import QServerPlanningWidget
@@ -671,6 +672,8 @@ class QueueMonitorWidget(QWidget):
                     cell.setData(QUEUE_ITEM_UID_ROLE, str(uid))
                     cell.setData(QUEUE_ITEM_STATE_ROLE, state)
                     cell.setData(QUEUE_ITEM_COLUMN_ROLE, spec.column_id)
+                    if state == QUEUE_ITEM_STATE_PENDING and 0 <= pending_index < len(self._pending_raw_items):
+                        cell.setData(QUEUE_ITEM_RAW_ROLE, deepcopy(self._pending_raw_items[pending_index]))
 
                     effective_key = source_key or spec.column_id
                     if effective_key and effective_key in param_names:
@@ -720,12 +723,9 @@ class QueueMonitorWidget(QWidget):
             column_id = self._columns[column_index].column_id
 
         plan_name = self._extract_plan_name(self._pending_raw_items[row])
-        print(plan_name)
         source_key = cell.data(QUEUE_ITEM_KWARG_KEY_ROLE)
         target_key = source_key if isinstance(source_key, str) and source_key else column_id
-        print(f"source_key: {source_key}, target_key: {target_key}")
         raw_item = self._pending_raw_items[row]
-        print(f"raw_item: {raw_item}")
         if not isinstance(raw_item, MutableMapping):
             self._revert_pending_edit(row, column_index, cell, "Unable to edit this entry.")
             return

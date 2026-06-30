@@ -204,11 +204,30 @@ tabs:
           label: Status
           stretch: true
 
+  - key: scan_monitor
+    title: Scan Monitor
+    description: Monitor scan status.
+    start_expanded: true
+    options:
+      enabled: true
+      poll_interval_ms: 5000
+      auto_connect: true
+      detector_recovery_cooldown_seconds: 30.0
+      detector_retries: 1
+      detector_timeout_factor: 3.0
+      sample_position_tolerance: 0.1
+
+  - key: scan_parameter_viewer
+    title: Parameter Viewer
+    description: Browse Bluesky HDF5 files and inspect extracted scan plan arguments.
+
 layout:
   type: tabs
   tab_order:
     - scan_setup
     - qserver_monitor
+    - scan_monitor
+    - scan_parameter_viewer
   status_bar:
     enabled: true
     messages:

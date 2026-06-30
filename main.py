@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import logging
 import pathlib
+import signal
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from typing import List, Optional
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
 
 from bsgui.config.defaults import register_default_widgets
@@ -81,6 +83,17 @@ def extract_widget_options(tab_configs: Sequence[dict], key: str) -> dict:
             if isinstance(options, dict):
                 return dict(options)
     return {}
+
+
+def extract_widget_options_any(tab_configs: Sequence[dict], *keys: str) -> tuple[dict, str | None]:
+    for key in keys:
+        for tab in tab_configs:
+            if tab.get("key") == key:
+                options = tab.get("options", {})
+                if isinstance(options, dict):
+                    return dict(options), key
+                return {}, key
+    return {}, None
 
 
 def parse_app_settings(config: dict) -> tuple[str, Sequence[int], dict]:
@@ -219,7 +232,13 @@ def main(argv: List[str]) -> int:
                     loader_cfg["search_paths"] = data_paths
 
     qserver_options = extract_widget_options(tab_configs, "qserver_monitor")
-    beamline_monitor_options = extract_widget_options(tab_configs, "beamline_monitor")
+    beamline_monitor_options, beamline_monitor_key = extract_widget_options_any(
+        tab_configs,
+        "scan_monitor",
+        "beamline_monitor",
+    )
+    if beamline_monitor_key:
+        beamline_monitor_options["widget_key"] = beamline_monitor_key
     scan_parameter_viewer_options = extract_widget_options(tab_configs, "scan_parameter_viewer")
     qserver_kwargs = {}
     poll_interval = qserver_options.get("poll_interval_ms")
@@ -248,6 +267,18 @@ def main(argv: List[str]) -> int:
     title, window_size, status_messages = parse_app_settings(config)
 
     app = QApplication(sys.argv)
+
+    def quit_from_signal(signum, _frame) -> None:
+        logging.info("Received signal %s, quitting GUI.", signum)
+        app.quit()
+
+    signal.signal(signal.SIGINT, quit_from_signal)
+    signal.signal(signal.SIGTERM, quit_from_signal)
+
+    signal_timer = QTimer()
+    signal_timer.timeout.connect(lambda: None)
+    signal_timer.start(250)
+
     window = MainWindow(
         tab_configs,
         registry,
