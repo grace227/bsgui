@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any, Optional
 
+from .plan_time import estimate_plan_time
 from .qserver_controller import PlanDefinition
 
 
@@ -187,6 +188,16 @@ def resolve_queue_value(
 
     if column_id == "index":
         return str(row_index + 1), None
+    if column_id in {"scan_size", "duration_min", "time_estimate"}:
+        estimate = estimate_plan_time(_extract_plan_name(item), _extract_plan_kwargs(item))
+        if column_id == "scan_size":
+            return estimate.scan_size or "", None
+        elapsed = _actual_elapsed_seconds(item)
+        if elapsed is not None:
+            return f"{elapsed / 60.0:.2f}", None
+        if estimate.seconds is None:
+            return "", None
+        return f"~{estimate.seconds / 60.0:.2f}", None
     if column_id in roi_key_map:
         roi_value = lookup_roi_value(
             column_id,
@@ -260,6 +271,49 @@ def resolve_queue_value(
             return "", column_id
         return format_scalar(fallback), column_id
     return format_scalar(value), column_id
+
+
+def _extract_plan_name(item: Mapping[str, Any]) -> str:
+    value = extract_item_field(item, "name") or item.get("name")
+    return str(value or "")
+
+
+def _extract_plan_kwargs(item: Mapping[str, Any]) -> dict[str, Any]:
+    kwargs = item.get("kwargs")
+    if isinstance(kwargs, Mapping):
+        return dict(kwargs)
+    nested_item = item.get("item")
+    if isinstance(nested_item, Mapping):
+        nested_kwargs = nested_item.get("kwargs")
+        if isinstance(nested_kwargs, Mapping):
+            return dict(nested_kwargs)
+    return {}
+
+
+def _actual_elapsed_seconds(item: Mapping[str, Any]) -> float | None:
+    result = item.get("result")
+    if not isinstance(result, Mapping):
+        return None
+
+    start = _timestamp_value(result.get("time_start") or result.get("start_time"))
+    stop = _timestamp_value(
+        result.get("time_stop")
+        or result.get("time_end")
+        or result.get("stop_time")
+        or result.get("time_done")
+    )
+    if start is None or stop is None or stop < start:
+        return None
+    return stop - start
+
+
+def _timestamp_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def apply_item_edit(
@@ -413,5 +467,3 @@ def format_time(value: Any, fmt: str = "%Y-%m-%d %H:%M") -> str:
 
 def format_sequence(value: Iterable[Any]) -> str:
     return ", ".join(str(entry) for entry in value)
-
-

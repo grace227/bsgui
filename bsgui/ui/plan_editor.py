@@ -26,12 +26,12 @@ from ..core.batch_generation import (
     execute_iteration_action,
     normalize_iteration_actions,
 )
+from ..core.plan_time import estimate_plan_time
 from ..core.qserver_controller import PlanDefinition, PlanParameter
 from .qserver_planning import emit_plan_added
 from .plan_editor_extra import PlanEditorExtraPanel
 from .plan_editor_utils import (
     DEFAULT_DISABLED_STYLE,
-    OVERHEAD_FACTOR,
     ParameterRow,
     apply_parameter_row_value,
     build_type_validator,
@@ -463,11 +463,16 @@ class PlanEditorWidget(QWidget):
         return line_edit
 
     def _update_eta_display(self) -> None:
-        eta = self._get_plan_time()
-        if eta is None:
+        estimate = self._get_plan_estimate()
+        parts = []
+        if estimate.seconds is not None:
+            parts.append(f"Estimated time: {estimate.seconds:.2f} seconds")
+        if estimate.scan_size:
+            parts.append(f"Scan size: {estimate.scan_size}")
+        if not parts:
             self._set_status("ETA unavailable", error=True)
         else:
-            self._set_status(f"Estimated time: {eta:.2f} seconds", error=False)
+            self._set_status(" | ".join(parts), error=False)
 
     def _get_latest_plan_kwargs(self, plan_name: str) -> Dict[str, object]:
         if self._controller is None:
@@ -495,25 +500,6 @@ class PlanEditorWidget(QWidget):
             if isinstance(kwargs, Mapping):
                 return dict(kwargs)
         return {}
-
-    def _extract_numeric_value(self, row: ParameterRow) -> Optional[float]:
-        checkbox, editor, parameter, default_value, default_label = row
-        if checkbox.isChecked():
-            text = read_parameter_editor_text(editor)
-            if not text:
-                return None
-            try:
-                coerced = parameter.coerce(text)
-            except (ValueError, TypeError):
-                return None
-        else:
-            coerced = default_value
-        if coerced is None:
-            return None
-        try:
-            return float(coerced)
-        except (TypeError, ValueError):
-            return None
 
     def _apply_roi_to_parameters(self, roi: Mapping[str, object]) -> None:
         if not self._parameter_rows or not self._roi_key_map:
@@ -545,8 +531,8 @@ class PlanEditorWidget(QWidget):
         if definition is None:
             return
 
-        #TODO: modify the self._get_plan_time() to check against the plan type instead of just the time
-        # if self._get_plan_time() is None or self._get_plan_time() <= 0:
+        #TODO: validate the plan estimate against plan type before adding stricter queue checks.
+        # if self._get_plan_estimate().seconds is None:
         #     self._set_status("Invalid plan time", error=True)
         #     # return
 
@@ -628,8 +614,8 @@ class PlanEditorWidget(QWidget):
         if definition is None:
             return
 
-        #TODO: modify the self._get_plan_time() to check against the plan type instead of just the time
-        # if self._get_plan_time() is None or self._get_plan_time() <= 0:
+        #TODO: validate the plan estimate against plan type before adding stricter queue checks.
+        # if self._get_plan_estimate().seconds is None:
         #     self._set_status("Invalid plan time", error=True)
         #     return
 
@@ -797,30 +783,20 @@ class PlanEditorWidget(QWidget):
         color = "#2e7d32" if not error else "#c62828"
         self._status_label.setStyleSheet(f"color: {color};")
 
-    def _get_plan_time(self) -> Optional[float]:
-        required = ["width", "height", "stepsize_x", "stepsize_y", "dwell"]
-        values: Dict[str, float] = {}
-        for key in required:
-            targets = self._roi_key_map.get(key, [])
-            for target in targets:
-                row = self._parameter_rows.get(target)
-                if not row:
-                    continue
-                numeric = self._extract_numeric_value(row)
-                if numeric is not None:
-                    if key == "dwell" and "ms" in target:
-                        numeric /= 1000
-                    values[key] = numeric
-                    break
-        if len(values) != len(required):
-            return None
+    def _get_plan_estimate(self):
+        definition = self.current_plan()
+        if definition is None:
+            return estimate_plan_time("", {}, kind=self._current_kind)
+        return estimate_plan_time(
+            definition.name,
+            self._collect_estimate_values(),
+            kind=self._current_kind,
+        )
 
-        steps_x = values["stepsize_x"]
-        steps_y = values["stepsize_y"]
-        width = values["width"]
-        height = values["height"]
-        dwell = values["dwell"]
-        if any(value == 0 for value in [steps_x, steps_y, width, height, dwell]):
-            return None
-
-        return (width / steps_x) * (height / steps_y) * dwell * OVERHEAD_FACTOR
+    def _collect_estimate_values(self) -> Dict[str, object]:
+        values: Dict[str, object] = {}
+        for name, row in self._parameter_rows.items():
+            value = read_parameter_row_value(row)
+            if value is not None:
+                values[name] = value
+        return values

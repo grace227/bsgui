@@ -254,11 +254,6 @@ tabs:
       detector_retries: 1
       detector_timeout_factor: 3.0
       sample_position_tolerance: 0.1
-      actions:
-        - text: Auto Y Piezo Center
-          qserver_function: recover_y_piezo
-          auto_monitor_summary: y piezo over limit
-          timeout: 10.0
   
   - key: scan_parameter_viewer
     title: Parameter Viewer

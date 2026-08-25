@@ -41,6 +41,7 @@ QUEUE_ITEM_STATE_PENDING = "pending"
 QUEUE_ITEM_STATE_COMPLETED = "completed"
 QUEUE_ITEM_STATE_RUNNING = "running"
 QUEUE_ITEM_KWARG_KEY_ROLE = Qt.ItemDataRole.UserRole + 4
+DERIVED_QUEUE_COLUMNS = {"scan_size", "duration_min", "time_estimate"}
 
 from ..core.qserver_controller import PlanDefinition, QServerController, QueueSnapshot
 from ..core.queue_item_utils import (
@@ -682,6 +683,8 @@ class QueueMonitorWidget(QWidget):
                     flags = cell.flags()
                     if state == QUEUE_ITEM_STATE_PENDING:
                         flags |= Qt.ItemIsDragEnabled | Qt.ItemIsEditable
+                        if spec.column_id in DERIVED_QUEUE_COLUMNS:
+                            flags &= ~Qt.ItemIsEditable
                     else:
                         flags &= ~Qt.ItemIsDragEnabled
                         flags &= ~Qt.ItemIsEditable
@@ -769,7 +772,7 @@ class QueueMonitorWidget(QWidget):
             payload = build_update_payload(
                 raw_item,
                 row_values,
-                exclude_keys={"name", "status"},
+                exclude_keys={"name", "status", *DERIVED_QUEUE_COLUMNS},
                 plan_definitions=self._plan_definitions,
                 plan_name=plan_name,
             )
@@ -905,6 +908,8 @@ class QueueMonitorWidget(QWidget):
         # Base plan name column
         add("status", "Status")
         add("name", "Plan")
+        add("scan_size", "Scan Size")
+        add("duration_min", "Duration (min)")
         add("time_start", "Start Time")
         add("scan_ids", "Scan ID")
 
