@@ -242,9 +242,9 @@ tabs:
           label: Status
           stretch: true
 
-  - key: beamline_monitor
-    title: Beamline Monitor
-    description: Monitor beamline status.
+  - key: scan_monitor
+    title: Scan Monitor
+    description: Monitor scan status.
     start_expanded: true
     options:
       enabled: true

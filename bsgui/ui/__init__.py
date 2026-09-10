@@ -2,6 +2,7 @@
 
 from .beamline_monitor import BeamlineMonitorWidget
 from .base_loader import BaseLoaderWidget
+from .data_management import DataManagementWidget
 from .scan_setup import DataVisualizationWidget, DataViewerPane
 from .ptychography_loader import PtychographyLoaderWidget
 from .plan_editor import PlanEditorWidget, PlanDefinition, PlanParameter
@@ -18,6 +19,7 @@ __all__ = [
     "BaseLoaderWidget",
     "BeamlineMonitorWidget",
     "CustomToolbar",
+    "DataManagementWidget",
     "DataVisualizationWidget",
     "DataViewerPane",
     "PlanDefinition",

@@ -132,6 +132,54 @@ tabs:
           items_in_queue:
             title: "Items In Queue:"
             label: Unknown
+        data_management:
+          enabled: true
+          title: Data Management
+          fields:
+            - name: experiment_name
+              label: Experiment Name
+              default: "2026-3_bsdm"
+              tooltip: "Example: 2026-3_blueskydm"
+              required: true
+            - name: root_path
+              label: Cycle Number
+              default: "2026-3"
+              tooltip: "Example: 2026-3"
+              required: true
+            - name: esaf_id
+              label: ESAF Number (Optional)
+              tooltip: "Optional ESAF number. If provided, ESAF users are linked to the DM experiment."
+              type_name: int
+            - name: data_directory
+              label: Data Directory
+              default: "/net/micdata/data1/2idd/2026-3/blueskydm"
+              tooltip: "Local folder watched by DM. Example: /net/micdata/data1/2idd/2026-3/blueskydm"
+              required: true
+            - name: process_existing
+              label: Process Existing Files
+              default: "true"
+              type_name: bool
+            - name: max_run_time_hours
+              label: Max Run Time Hours
+              default: "1000"
+              type_name: float
+          action_note: "Create the experiment before starting DAQ."
+          actions:
+            - text: Create Experiment
+              qserver_function: create_dm_experiment
+              timeout: 30.0
+              input_map:
+                experiment_name: experiment_name
+                root_path: root_path
+                esaf_id: esaf_id
+            - text: Start DAQ
+              qserver_function: start_dm_daq
+              timeout: 30.0
+              input_map:
+                experiment_name: experiment_name
+                data_directory: data_directory
+                process_existing: process_existing
+                max_run_time_hours: max_run_time_hours
 
       console_output:
         enabled: true
@@ -204,18 +252,18 @@ tabs:
           label: Status
           stretch: true
 
-  - key: scan_monitor
-    title: Scan Monitor
-    description: Monitor scan status.
-    start_expanded: true
-    options:
-      enabled: true
-      poll_interval_ms: 5000
-      auto_connect: true
-      detector_recovery_cooldown_seconds: 30.0
-      detector_retries: 1
-      detector_timeout_factor: 3.0
-      sample_position_tolerance: 0.1
+  # - key: scan_monitor
+  #   title: Scan Monitor
+  #   description: Monitor scan status.
+  #   start_expanded: true
+  #   options:
+  #     enabled: true
+  #     poll_interval_ms: 5000
+  #     auto_connect: true
+  #     detector_recovery_cooldown_seconds: 30.0
+  #     detector_retries: 1
+  #     detector_timeout_factor: 3.0
+  #     sample_position_tolerance: 0.1
 
   - key: scan_parameter_viewer
     title: Parameter Viewer

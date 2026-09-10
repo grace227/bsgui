@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Mapping, Optional, Tuple
 
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from .data_management import DataManagementWidget
 from .status_bus import emit_status
 
 if TYPE_CHECKING:
@@ -34,12 +35,14 @@ class QueueServerStatusWidget(QWidget):
         *,
         parent: Optional[QWidget] = None,
         indicators: Optional[Mapping[str, Mapping[str, str]]] = None,
+        data_management: Optional[Mapping[str, Any]] = None,
     ) -> None:
         super().__init__(parent)
 
         self._labels: Dict[str, QLabel] = {}
         self._default_labels: Dict[str, str] = {}
         self._controller: Optional["QServerController"] = None
+        self._data_management_widget: Optional[DataManagementWidget] = None
         self._pending_threads: set[threading.Thread] = set()
 
         self._tabs = QTabWidget(self)
@@ -52,6 +55,15 @@ class QueueServerStatusWidget(QWidget):
 
         status_panel = self._build_qserver_status_panel(indicators)
         self._tabs.addTab(status_panel, "Queue Server")
+        if data_management and data_management.get("enabled", True):
+            self._data_management_widget = DataManagementWidget(
+                controller=None,
+                config=data_management,
+            )
+            self._tabs.addTab(
+                self._data_management_widget,
+                str(data_management.get("title", "Data Management")),
+            )
 
         self.set_queue_status(connected=False, queue_status="Unknown", run_engine_status="Unknown")
 
@@ -236,6 +248,8 @@ class QueueServerStatusWidget(QWidget):
 
     def set_controller(self, controller: "QServerController") -> None:
         self._controller = controller
+        if self._data_management_widget is not None:
+            self._data_management_widget.set_controller(controller)
         self._start_re_button.setEnabled(False)
         self._stop_re_button.setEnabled(False)
 
@@ -255,4 +269,3 @@ class QueueServerStatusWidget(QWidget):
             return
         self._start_re_button.setEnabled(False)
         controller.start_re()
-

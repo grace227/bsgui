@@ -6,6 +6,7 @@ from .core import DataVisualizationController, DataLoader, default_loader
 from .ui import (
     BaseLoaderWidget,
     CustomToolbar,
+    DataManagementWidget,
     DataVisualizationWidget,
     DataViewerPane,
     PlanDefinition,
@@ -20,6 +21,7 @@ from .ui import (
 __all__ = [
     "BaseLoaderWidget",
     "CustomToolbar",
+    "DataManagementWidget",
     "DataLoader",
     "DataVisualizationController",
     "DataVisualizationWidget",

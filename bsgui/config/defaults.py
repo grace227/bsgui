@@ -254,6 +254,9 @@ def register_default_widgets(
             indicator_config = raw_indicators
             indicator_keys = tuple(raw_indicators.keys())
             status_keys_override = tuple(key for key in indicator_keys if key != "connected")
+        data_management_cfg = status_cfg.get("data_management")
+    else:
+        data_management_cfg = None
 
     _qserver_controller: Optional[QServerController] = None
 
@@ -341,7 +344,14 @@ def register_default_widgets(
 
     if include_status:
         def make_status_widget() -> tuple[QWidget, str]:
-            widget = QueueServerStatusWidget(indicators=indicator_config)
+            widget = QueueServerStatusWidget(
+                indicators=indicator_config,
+                data_management=(
+                    data_management_cfg
+                    if isinstance(data_management_cfg, Mapping)
+                    else None
+                ),
+            )
             controller = ensure_controller()
             widget.set_controller(controller)
             widget.connectRequested.connect(controller.request_connect)
