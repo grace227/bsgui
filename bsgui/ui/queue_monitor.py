@@ -93,6 +93,7 @@ class QueueMonitorWidget(QWidget):
         self._pending_table_refresh = False
         self._has_active_plan = False
         self._resume_enabled_after_pause = False
+        self._worker_environment_state: Optional[str] = None
 
         self._queue_table = QTableWidget(0, 0)
         self._queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -192,8 +193,13 @@ class QueueMonitorWidget(QWidget):
                 self._controller.queueUpdated.disconnect(self._handle_queue_updated)
             except (RuntimeError, AttributeError):
                 pass
+            try:
+                self._controller.statusUpdated.disconnect(self._handle_status_updated)
+            except (RuntimeError, AttributeError):
+                pass
         self._controller = controller
         self._plan_param_cache.clear()
+        self._worker_environment_state = None
         self._load_plan_definitions()
         if self._qtable_controls is not None:
             self._qtable_controls.set_controller(controller)
@@ -201,12 +207,29 @@ class QueueMonitorWidget(QWidget):
             self._planning_widget.set_controller(controller)
         self._scan_monitor.set_controller(controller)
         controller.queueUpdated.connect(self._handle_queue_updated)
+        controller.statusUpdated.connect(self._handle_status_updated)
         snapshot = controller.fetch_snapshot()
         if snapshot:
             self._apply_snapshot(snapshot)
 
     # ------------------------------------------------------------------
     # Snapshot/application helpers
+
+    def _handle_status_updated(self, status: Mapping[str, Any]) -> None:
+        """Refresh cached plan definitions when the RE environment opens."""
+        if "worker_environment_state" not in status:
+            return
+
+        state = status.get("worker_environment_state")
+        if state == "closed":
+            self._plan_definitions.clear()
+            self._plan_param_cache.clear()
+        elif state in {"idle", "executing_plan"}:
+            previous_state = self._worker_environment_state
+            if previous_state not in {"idle", "executing_plan"}:
+                self._load_plan_definitions()
+
+        self._worker_environment_state = state
 
     def _handle_pause_scan(self) -> None:
         api = self._require_queue_api()
