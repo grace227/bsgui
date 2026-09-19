@@ -70,7 +70,9 @@ class ScanMonitorWidget(QWidget):
 
     def set_controller(self, controller: QServerController) -> None:
         self._controller = controller
-        controller.consoleMessageReceived.connect(lambda _msg: self.refresh())
+        # Refresh through the Qt timer only.  The console receiver runs in a
+        # background thread, so updating widgets directly from its signal can
+        # interrupt other GUI controls such as Scan Setup combo boxes.
         self._timer.start()
         self.refresh()
 

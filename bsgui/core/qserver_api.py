@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional
 from bluesky_queueserver_api.zmq import REManagerAPI
 from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
+import threading
 import time
 
 from .qserver_call_log import (
@@ -18,6 +19,7 @@ from .qserver_call_log import (
 class _ConsoleMonitorBuffer:
     def __init__(self, *, max_messages: int = 2000) -> None:
         self._buffer = deque(maxlen=max(1, max_messages))
+        self._lock = threading.Lock()
 
     def append(self, message: Mapping[str, Any] | str) -> None:
         if isinstance(message, Mapping):
@@ -30,19 +32,27 @@ class _ConsoleMonitorBuffer:
         else:
             text = str(message)
         if text:
-            self._buffer.append(text)
+            with self._lock:
+                self._buffer.append(text)
 
     def clear(self) -> None:
-        self._buffer.clear()
+        with self._lock:
+            self._buffer.clear()
 
     def clear_matching(self, patterns: list[str] | tuple[str, ...]) -> None:
         if not patterns:
             return
-        retained = [entry for entry in self._buffer if not any(pattern in entry for pattern in patterns)]
-        self._buffer = deque(retained, maxlen=self._buffer.maxlen)
+        with self._lock:
+            retained = [
+                entry
+                for entry in self._buffer
+                if not any(pattern in entry for pattern in patterns)
+            ]
+            self._buffer = deque(retained, maxlen=self._buffer.maxlen)
 
     def text(self) -> str:
-        return "".join(self._buffer)
+        with self._lock:
+            return "".join(self._buffer)
 
 
 class QServerAPI(REManagerAPI):
@@ -54,6 +64,7 @@ class QServerAPI(REManagerAPI):
     def __init__(self, *args, **kwargs) -> None:
         self._beamline_monitor_manifest_path = kwargs.pop("beamline_monitor_manifest_path", None)
         super().__init__(*args, **kwargs)
+        self._rm_status = {}
         self._save_data_path = None
         self._console_output = ReceiveConsoleOutput(zmq_subscribe_addr=kwargs.get("zmq_info_addr", None))
         self._console_monitor = _ConsoleMonitorBuffer()
@@ -65,21 +76,19 @@ class QServerAPI(REManagerAPI):
     def get_status(self, selected_keys: Optional[List[str]] = None) -> Dict[str, Any]:
         try:
             status = self.status()
-            self._rm_status["connected"] = True
             if selected_keys is not None:
-                for key in selected_keys:
-                    self._rm_status[key] = status.get(key, None)
+                new_status = {key: status.get(key, None) for key in selected_keys}
             else:
-                self._rm_status = status
-            self._rm_status["qserver_address"] = self._zmq_info_addr
+                new_status = dict(status)
+            new_status["connected"] = True
+            new_status["qserver_address"] = self._zmq_info_addr
+            self._rm_status = new_status
 
         except Exception as exc:  # pragma: no cover - network path
             print(f"Error fetching status: {exc}")
-            # self._connected = False
-            self._rm_status = {} 
-            self._rm_status["connected"] = False
+            self._rm_status = {"connected": False}
 
-        return self._rm_status
+        return dict(self._rm_status)
 
     def scan_pause(self) -> Dict[str, Any]:
         try:

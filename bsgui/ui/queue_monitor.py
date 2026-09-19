@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPalette, QBrush
 
 from PySide6.QtWidgets import (
@@ -62,6 +62,27 @@ class QueueColumnSpec:
     stretch: bool = False
 
 
+class _QueueRequestSignals(QObject):
+    result = Signal(object, object)
+    failed = Signal(str)
+
+
+class _QueueRequest(QRunnable):
+    """Run one QServer request without blocking the Qt GUI thread."""
+
+    def __init__(self, function, context) -> None:
+        super().__init__()
+        self._function = function
+        self._context = context
+        self.signals = _QueueRequestSignals()
+
+    def run(self) -> None:
+        try:
+            self.signals.result.emit(self._context, self._function())
+        except Exception as exc:  # pragma: no cover - network path
+            self.signals.failed.emit(str(exc))
+
+
 class QueueMonitorWidget(QWidget):
     """Widget that displays queue state and progress for Bluesky QServer."""
 
@@ -94,6 +115,9 @@ class QueueMonitorWidget(QWidget):
         self._has_active_plan = False
         self._resume_enabled_after_pause = False
         self._worker_environment_state: Optional[str] = None
+        self._request_pool = QThreadPool(self)
+        self._plan_request_in_progress = False
+        self._snapshot_request_in_progress = False
 
         self._queue_table = QTableWidget(0, 0)
         self._queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -200,7 +224,7 @@ class QueueMonitorWidget(QWidget):
         self._controller = controller
         self._plan_param_cache.clear()
         self._worker_environment_state = None
-        self._load_plan_definitions()
+        self._request_plan_definitions()
         if self._qtable_controls is not None:
             self._qtable_controls.set_controller(controller)
         if hasattr(self, "_planning_widget"):
@@ -208,9 +232,7 @@ class QueueMonitorWidget(QWidget):
         self._scan_monitor.set_controller(controller)
         controller.queueUpdated.connect(self._handle_queue_updated)
         controller.statusUpdated.connect(self._handle_status_updated)
-        snapshot = controller.fetch_snapshot()
-        if snapshot:
-            self._apply_snapshot(snapshot)
+        self._request_snapshot()
 
     # ------------------------------------------------------------------
     # Snapshot/application helpers
@@ -227,7 +249,7 @@ class QueueMonitorWidget(QWidget):
         elif state in {"idle", "executing_plan"}:
             previous_state = self._worker_environment_state
             if previous_state not in {"idle", "executing_plan"}:
-                self._load_plan_definitions()
+                self._request_plan_definitions()
 
         self._worker_environment_state = state
 
@@ -336,20 +358,46 @@ class QueueMonitorWidget(QWidget):
     
     def _handle_queue_updated(self, snapshot: QueueSnapshot) -> None:
         if not self._plan_definitions:
-            self._load_plan_definitions()
+            self._request_plan_definitions()
         self._apply_snapshot(snapshot)
 
-    def _load_plan_definitions(self) -> None:
-        self._plan_definitions = {}
+    def _request_plan_definitions(self) -> None:
         controller = self._controller
-        if controller is None:
+        if controller is None or self._plan_request_in_progress:
             return
-        try:
-            definitions = controller.get_allowed_plan_definitions()
-        except Exception:
+        self._plan_request_in_progress = True
+        request = _QueueRequest(controller.get_allowed_plan_definitions, controller)
+        request.signals.result.connect(self._handle_plan_definitions_loaded)
+        request.signals.failed.connect(self._handle_plan_definitions_failed)
+        self._request_pool.start(request)
+
+    def _handle_plan_definitions_loaded(self, controller, definitions) -> None:
+        self._plan_request_in_progress = False
+        if controller is not self._controller:
             return
         self._plan_definitions = {definition.name: definition for definition in definitions}
         self._plan_param_cache.clear()
+
+    def _handle_plan_definitions_failed(self, _error: str) -> None:
+        self._plan_request_in_progress = False
+
+    def _request_snapshot(self) -> None:
+        controller = self._controller
+        if controller is None or self._snapshot_request_in_progress:
+            return
+        self._snapshot_request_in_progress = True
+        request = _QueueRequest(controller.fetch_snapshot, controller)
+        request.signals.result.connect(self._handle_snapshot_loaded)
+        request.signals.failed.connect(self._handle_snapshot_failed)
+        self._request_pool.start(request)
+
+    def _handle_snapshot_loaded(self, controller, snapshot) -> None:
+        self._snapshot_request_in_progress = False
+        if controller is self._controller and snapshot:
+            self._apply_snapshot(snapshot)
+
+    def _handle_snapshot_failed(self, _error: str) -> None:
+        self._snapshot_request_in_progress = False
 
     def _apply_snapshot(self, snapshot: QueueSnapshot) -> None:
         self.update_completed(snapshot.completed or [])
