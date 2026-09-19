@@ -149,6 +149,14 @@ def register_default_widgets(
 
     viewer_cfg = data_viewer_options or {}
     loader_cfg = viewer_cfg.get("loaders", {}) if isinstance(viewer_cfg.get("loaders"), dict) else {}
+    try:
+        roi_precision = max(0, int(viewer_cfg.get("roi_precision", 5)))
+    except (TypeError, ValueError):
+        roi_precision = 5
+    try:
+        point_precision = max(0, int(viewer_cfg.get("point_precision", 5)))
+    except (TypeError, ValueError):
+        point_precision = 5
 
     loader_factories: List[Callable[[], tuple]] = []
     extra_factories: List[Callable[[], tuple[QWidget, str]]] = []
@@ -417,6 +425,8 @@ def register_default_widgets(
             loader_instances,
             extra_widgets=extra_widgets,
             layout_config=viewer_cfg.get("layout"),
+            roi_precision=roi_precision,
+            point_precision=point_precision,
         )
 
         plan_editor_widget: Optional[PlanEditorWidget] = None

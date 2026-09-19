@@ -11,9 +11,20 @@ class CustomToolbar(NavigationToolbar):
     roiDrawn = Signal(dict)
     pointSelected = Signal(dict)
     colorLogScaleChanged = Signal(bool)
-    def __init__(self, canvas, parent):
+    aspectRatioChanged = Signal(bool)
+    def __init__(
+        self, canvas, parent, *, roi_precision: int = 5, point_precision: int = 5
+    ):
         super().__init__(canvas, parent)
         self.parent = parent
+        try:
+            self._roi_precision = max(0, int(roi_precision))
+        except (TypeError, ValueError):
+            self._roi_precision = 5
+        try:
+            self._point_precision = max(0, int(point_precision))
+        except (TypeError, ValueError):
+            self._point_precision = 5
 
         self._invert_y_enabled = False
         self._color_log_scale_enabled = False
@@ -25,6 +36,11 @@ class CustomToolbar(NavigationToolbar):
         self.colorLogScaleAction = QAction("Log Scale", self)
         self.colorLogScaleAction.setCheckable(True)
         self.addAction(self.colorLogScaleAction)
+
+        self.equalAspectAction = QAction("Equal Aspect", self)
+        self.equalAspectAction.setCheckable(True)
+        self.equalAspectAction.setChecked(True)
+        self.addAction(self.equalAspectAction)
 
         # Configure the ROI actions
         self.drawRectangleAction = QAction("Add ROI", self)
@@ -44,6 +60,7 @@ class CustomToolbar(NavigationToolbar):
         # Connect the action trigger to enable/disable rectangle drawing
         self.invertYAction.triggered.connect(self.toggle_invert_y)
         self.colorLogScaleAction.triggered.connect(self.toggle_color_log_scale)
+        self.equalAspectAction.triggered.connect(self.toggle_equal_aspect)
         self.drawRectangleAction.triggered.connect(self.toggle_rectangle_drawing)
         self.removeRectangleAction.triggered.connect(self.toggle_rectangle_remove)
         self.selectPointAction.triggered.connect(self.toggle_point_selection)
@@ -82,6 +99,9 @@ class CustomToolbar(NavigationToolbar):
     def toggle_color_log_scale(self):
         self._color_log_scale_enabled = self.colorLogScaleAction.isChecked()
         self.colorLogScaleChanged.emit(self._color_log_scale_enabled)
+
+    def toggle_equal_aspect(self):
+        self.aspectRatioChanged.emit(self.equalAspectAction.isChecked())
 
     @property
     def color_log_scale_enabled(self):
@@ -273,10 +293,10 @@ class CustomToolbar(NavigationToolbar):
         axes = rect.axes
         title = "selected from " + axes.get_title() if axes is not None else ""
         data = {
-            "x": np.round(x_center, 5),
-            "y": np.round(y_center, 5),
-            "width": np.round(rect.get_width(), 5),
-            "height": np.round(rect.get_height(), 5),
+            "x": np.round(x_center, self._roi_precision),
+            "y": np.round(y_center, self._roi_precision),
+            "width": np.round(rect.get_width(), self._roi_precision),
+            "height": np.round(rect.get_height(), self._roi_precision),
             "title": title,
         }
         self.roiDrawn.emit(data)
@@ -295,8 +315,8 @@ class CustomToolbar(NavigationToolbar):
             title = "selected from " + axes.get_title() if axes is not None else ""
             self.pointSelected.emit(
                 {
-                    "x": np.round(x, 5),
-                    "y": np.round(y, 5),
+                    "x": np.round(x, self._point_precision),
+                    "y": np.round(y, self._point_precision),
                     "title": title,
                 }
             )

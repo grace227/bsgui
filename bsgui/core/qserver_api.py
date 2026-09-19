@@ -9,6 +9,12 @@ from bluesky_queueserver_api import BFunc
 from bluesky_queueserver import ReceiveConsoleOutput
 import time
 
+from .qserver_call_log import (
+    get_active_log_directory,
+    log_qserver_call,
+    qserver_log_context,
+)
+
 class _ConsoleMonitorBuffer:
     def __init__(self, *, max_messages: int = 2000) -> None:
         self._buffer = deque(maxlen=max(1, max_messages))
@@ -207,6 +213,21 @@ class QServerAPI(REManagerAPI):
             timeout=timeout,
         )
 
+    def _log_qserver_call(self, function_name: str, **kwargs: Any) -> None:
+        """Log in the QServer save directory, falling back to the active directory."""
+        log_directory = get_active_log_directory()
+        if log_directory is None and function_name != "get_save_data_path":
+            try:
+                log_directory = self.get_save_data_path(timeout=5.0)
+            except Exception:
+                log_directory = None
+        log_qserver_call(function_name, log_directory=log_directory, **kwargs)
+
+    def batch_logging_context(self):
+        """Return a context that reuses one save directory for batch calls."""
+        log_directory = self.get_save_data_path(timeout=5.0)
+        return qserver_log_context(log_directory)
+
     def execute_function(
         self,
         function_name: str,
@@ -218,24 +239,79 @@ class QServerAPI(REManagerAPI):
     ) -> Any:
         """Execute a qserver function and return its ``return_value``."""
 
-        func = BFunc(function_name, **dict(call_kwargs or {}))
+        parameters = dict(call_kwargs or {})
+        # Record the request before contacting QServer so the input parameters
+        # are preserved even if request construction or execution fails.
+        self._log_qserver_call(
+            function_name,
+            call_kwargs=parameters,
+            user_group=user_group,
+            timeout=timeout,
+            status="started",
+        )
         try:
+            func = BFunc(function_name, **parameters)
             reply = self.function_execute(func, user_group=user_group, run_in_background=run_in_background)
             if not reply.get("success"):
-                print(f"QueueServer rejected {function_name}(): {reply.get('msg')}")
+                message = str(reply.get("msg"))
+                self._log_qserver_call(
+                    function_name,
+                    call_kwargs=parameters,
+                    user_group=user_group,
+                    timeout=timeout,
+                    status="rejected",
+                    return_value=reply,
+                    error=message,
+                )
+                print(f"QueueServer rejected {function_name}(): {message}")
                 return None
 
             task_uid = reply.get("task_uid")
             if not task_uid:
+                message = f"No task UID returned: {reply}"
+                self._log_qserver_call(
+                    function_name,
+                    call_kwargs=parameters,
+                    user_group=user_group,
+                    timeout=timeout,
+                    status="invalid_reply",
+                    return_value=reply,
+                    error=message,
+                )
                 print(f"No task UID returned for {function_name}(): {reply}")
                 return None
 
             self.wait_for_completed_task(task_uid, timeout=timeout)
             result = self.task_result(task_uid=task_uid).get("result") or {}
-            return result.get("return_value")
+            return_value = result.get("return_value")
+            self._log_qserver_call(
+                function_name,
+                call_kwargs=parameters,
+                user_group=user_group,
+                timeout=timeout,
+                status="completed",
+                return_value=return_value,
+            )
+            return return_value
         except (self.WaitTimeoutError, self.WaitCancelError) as exc:
+            self._log_qserver_call(
+                function_name,
+                call_kwargs=parameters,
+                user_group=user_group,
+                timeout=timeout,
+                status="timeout",
+                error=str(exc),
+            )
             print(f"Timed out waiting for {function_name}(): {exc}")
         except Exception as exc:  # pragma: no cover - network path
+            self._log_qserver_call(
+                function_name,
+                call_kwargs=parameters,
+                user_group=user_group,
+                timeout=timeout,
+                status="error",
+                error=str(exc),
+            )
             print(f"Error running {function_name}(): {exc}")
         return None
 

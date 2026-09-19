@@ -23,6 +23,7 @@ class PlotCanvasWidget(QWidget):
         self._image_raw_data: np.ndarray | None = None
         self._image_vmax_percentile = 99.0
         self._color_log_scale = False
+        self._equal_aspect = True
 
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -90,7 +91,7 @@ class PlotCanvasWidget(QWidget):
             extent=extent,
             origin="lower",
             norm=norm,
-            aspect="equal",
+            aspect="equal" if self._equal_aspect else "auto",
         )
 
         self._axes.set_title(title)
@@ -104,6 +105,18 @@ class PlotCanvasWidget(QWidget):
                 self._colorbar.set_label(color_bar_label)
 
         self._canvas.draw()
+
+    @property
+    def equal_aspect(self) -> bool:
+        return self._equal_aspect
+
+    def set_equal_aspect(self, enabled: bool) -> bool:
+        """Set whether plotted data uses equal or automatic aspect ratio."""
+
+        self._equal_aspect = bool(enabled)
+        self._axes.set_aspect("equal" if self._equal_aspect else "auto")
+        self._canvas.draw_idle()
+        return self._equal_aspect
 
     @property
     def color_log_scale(self) -> bool:
@@ -172,6 +185,7 @@ class PlotCanvasWidget(QWidget):
         self._axes.set_xlabel(xlabel)
         self._axes.set_ylabel(ylabel)
         self._axes.grid(grid)
+        self._axes.set_aspect("equal" if self._equal_aspect else "auto")
         self._canvas.draw()
 
     def show_message(self, message: str) -> None:

@@ -23,7 +23,13 @@ class DataVisualizationWidget(QWidget):
     cursorMoved = Signal(dict)
     roiDrawn = Signal(dict)
 
-    def __init__(self, *, parent: Optional[QWidget] = None) -> None:
+    def __init__(
+        self,
+        *,
+        roi_precision: int = 5,
+        point_precision: int = 5,
+        parent: Optional[QWidget] = None,
+    ) -> None:
         super().__init__(parent)
         self._canvas = PlotCanvasWidget(parent=self)
         self._last_payload: Optional[dict[str, Any]] = None
@@ -34,11 +40,17 @@ class DataVisualizationWidget(QWidget):
 
         self.ax = self._canvas.axes
         self.line = None
-        self._toolbar = CustomToolbar(self._canvas.canvas, self)  # type: ignore[arg-type]
+        self._toolbar = CustomToolbar(
+            self._canvas.canvas,
+            self,
+            roi_precision=roi_precision,
+            point_precision=point_precision,
+        )  # type: ignore[arg-type]
         layout.insertWidget(0, self._toolbar)
         self._toolbar.roiDrawn.connect(self.roiDrawn.emit)
         self._toolbar.pointSelected.connect(self.canvasPointSelected.emit)
         self._toolbar.colorLogScaleChanged.connect(self._set_color_log_scale)
+        self._toolbar.aspectRatioChanged.connect(self._canvas.set_equal_aspect)
 
     @property
     def plot_canvas(self) -> PlotCanvasWidget:
@@ -152,6 +164,8 @@ class DataViewerPane(QWidget):
         *,
         extra_widgets: Optional[Sequence[Tuple[QWidget, str]]] = None,
         layout_config: Optional[dict] = None,
+        roi_precision: int = 5,
+        point_precision: int = 5,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -163,7 +177,11 @@ class DataViewerPane(QWidget):
         self._extra_widgets = list(extra_widgets or [])
         self._layout_config = layout_config if isinstance(layout_config, dict) else None
 
-        self._viewer = DataVisualizationWidget(parent=self)
+        self._viewer = DataVisualizationWidget(
+            roi_precision=roi_precision,
+            point_precision=point_precision,
+            parent=self,
+        )
         self._loader_panel = QWidget(self)
         panel_layout = QVBoxLayout(self._loader_panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)

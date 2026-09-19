@@ -18,6 +18,8 @@ tabs:
     description: Configure XRF and/or Ptychography loaders that share a plotting canvas.
     start_expanded: true
     options:
+      roi_precision: 5
+      point_precision: 5
       loaders:
         xrf:
           enabled: true
