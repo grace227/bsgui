@@ -7,7 +7,7 @@ from datetime import datetime
 from datetime import timedelta
 from typing import Any, Mapping, Optional, Sequence
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from .status_bus import emit_status
+from ..core.thread_status import register_thread_pool
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,55 @@ class MonitorAction:
     timeout: float = 5.0
     auto_monitor_summary: str | None = None
     wait_for_inner_scan_finish: bool = False
+
+
+class _SnapshotRequestSignals(QObject):
+    result = Signal(object, object)
+    failed = Signal(object, str)
+
+
+class _SnapshotRequest(QRunnable):
+    """Fetch a beamline snapshot without blocking the Qt GUI thread."""
+
+    def __init__(self, controller, request) -> None:
+        super().__init__()
+        self._controller = controller
+        self._request = request
+        self.signals = _SnapshotRequestSignals()
+
+    def run(self) -> None:
+        try:
+            self.signals.result.emit(self._controller, self._request())
+        except Exception as exc:  # pragma: no cover - network path
+            self.signals.failed.emit(self._controller, str(exc))
+
+
+class _ActionRequestSignals(QObject):
+    result = Signal(object, object, object)
+    progress = Signal(object, object, str)
+    failed = Signal(object, object, str)
+
+
+class _ActionRequest(QRunnable):
+    """Run a pause/execute/resume QServer action away from the GUI thread."""
+
+    def __init__(self, controller, context, request) -> None:
+        super().__init__()
+        self._controller = controller
+        self._context = context
+        self._request = request
+        self.signals = _ActionRequestSignals()
+
+    def run(self) -> None:
+        try:
+            result = self._request(
+                lambda message: self.signals.progress.emit(
+                    self._controller, self._context, str(message)
+                )
+            )
+            self.signals.result.emit(self._controller, self._context, result)
+        except Exception as exc:  # pragma: no cover - network path
+            self.signals.failed.emit(self._controller, self._context, str(exc))
 
 
 class BeamlineMonitorWidget(QWidget):
@@ -56,6 +106,14 @@ class BeamlineMonitorWidget(QWidget):
         self._expanded_devices: set[str] = set()
         self._last_snapshot: Mapping[str, Any] | None = None
         self._refresh_in_progress = False
+        self._request_pool = QThreadPool(self)
+        register_thread_pool("beamline-snapshot", self._request_pool, "BeamlineMonitorWidget")
+        self._action_pool = QThreadPool(self)
+        register_thread_pool("beamline-action", self._action_pool, "BeamlineMonitorWidget")
+        # Pause/execute/resume operations should not overlap with one another.
+        self._action_pool.setMaxThreadCount(1)
+        self._detector_recovery_in_progress: set[str] = set()
+        self._monitor_actions_in_progress: set[str] = set()
         self._detector_recovery_cooldown_seconds = (
             float(detector_recovery_cooldown_seconds)
             if detector_recovery_cooldown_seconds is not None
@@ -178,29 +236,37 @@ class BeamlineMonitorWidget(QWidget):
             return
 
         self._refresh_in_progress = True
+        request = _SnapshotRequest(
+            controller,
+            controller._api.get_active_plan_monitor_snapshot,
+        )
+        request.signals.result.connect(self._handle_snapshot_loaded)
+        request.signals.failed.connect(self._handle_snapshot_failed)
+        self._request_pool.start(request)
+
+    def _handle_snapshot_loaded(self, controller, snapshot) -> None:
+        self._refresh_in_progress = False
+        if controller is not self._controller:
+            return
+        if not isinstance(snapshot, Mapping):
+            self._set_empty_state("Beamline snapshot unavailable", error=str(snapshot))
+            return
+
         scroll_bar = self._device_list.verticalScrollBar()
         scroll_value = scroll_bar.value() if scroll_bar is not None else None
+        self._run_auto_monitor_actions(snapshot)
+        if self._detector_monitor_enabled:
+            self._run_detector_monitor(snapshot)
+        self._render_snapshot(snapshot)
+        if scroll_bar is not None and scroll_value is not None:
+            scroll_bar.setValue(scroll_value)
 
-        try:
-            try:
-                snapshot = controller._api.get_active_plan_monitor_snapshot()
-            except Exception as exc:
-                self._set_empty_state("Failed to load beamline snapshot", error=str(exc))
-                emit_status(f"Beamline monitor refresh failed: {exc}")
-                return
-
-            if not isinstance(snapshot, Mapping):
-                self._set_empty_state("Beamline snapshot unavailable", error=str(snapshot))
-                return
-
-            self._run_auto_monitor_actions(snapshot)
-            if self._detector_monitor_enabled:
-                self._run_detector_monitor(snapshot)
-            self._render_snapshot(snapshot)
-            if scroll_bar is not None and scroll_value is not None:
-                scroll_bar.setValue(scroll_value)
-        finally:
-            self._refresh_in_progress = False
+    def _handle_snapshot_failed(self, controller, error: str) -> None:
+        self._refresh_in_progress = False
+        if controller is not self._controller:
+            return
+        self._set_empty_state("Failed to load beamline snapshot", error=error)
+        emit_status(f"Beamline monitor refresh failed: {error}")
 
     def _toggle_auto_refresh(self, checked: bool) -> None:
         self._auto_refresh = bool(checked)
@@ -361,31 +427,12 @@ class BeamlineMonitorWidget(QWidget):
             self._set_error("No QServer controller available for detector recovery")
             return
 
-        self._record_recovery_status(device_name, "Starting detector recovery")
-        result = self._execute_detector_recovery(device_name)
-        reason = result.get("reason")
-        recovered = bool(result.get("success"))
-        if recovered:
-            self._last_recovery_at[device_name] = datetime.now()
-            self._record_recovery_status(device_name, "Detector recovery complete")
-            emit_status(f"{device_name} detector recovery commands sent")
-            self._set_error(None)
-        else:
-            self._record_recovery_status(
-                device_name,
-                f"Detector recovery failed: {reason or result.get('error') or 'unknown error'}",
-            )
-            self._set_error(f"{device_name} recovery failed: {reason or result.get('error') or 'unknown error'}")
-            emit_status(f"{device_name} detector recovery failed")
-        self.refresh()
+        self._start_detector_recovery(device_name)
 
     def _run_detector_monitor(self, snapshot: Mapping[str, Any]) -> None:
         controller = self._controller
         if controller is None:
             return
-        now = datetime.now()
-        recovered: list[str] = []
-        failed: list[str] = []
         devices = snapshot.get("devices")
         devices = dict(devices) if isinstance(devices, Mapping) else {}
         for device_name, device in devices.items():
@@ -396,40 +443,100 @@ class BeamlineMonitorWidget(QWidget):
             previous = self._last_recovery_at.get(device_name)
             if previous is not None and now - previous < timedelta(seconds=self._detector_recovery_cooldown_seconds):
                 continue
-            self._record_recovery_status(device_name, "Starting detector recovery")
-            result = self._execute_detector_recovery(device_name)
-            if isinstance(result, Mapping) and result.get("success"):
-                self._last_recovery_at[device_name] = now
-                self._record_recovery_status(device_name, "Detector recovery complete")
-                recovered.append(device_name)
-            else:
-                self._record_recovery_status(
-                    device_name,
-                    f"Detector recovery failed: {result.get('reason') or result.get('error') or 'unknown error'}",
-                )
-                failed.append(device_name)
+            self._start_detector_recovery(device_name)
 
-        if recovered:
-            emit_status(f"Detector monitor sent recovery for {', '.join(recovered)}")
-        if failed:
-            emit_status(f"Detector monitor failed recovery for {', '.join(failed)}")
-
-    def _execute_detector_recovery(self, device_name: str) -> Mapping[str, Any]:
+    def _start_detector_recovery(self, device_name: str) -> None:
+        if device_name in self._detector_recovery_in_progress:
+            return
         controller = self._controller
         if controller is None:
-            return {"device": device_name, "success": False, "error": "No QServer controller available"}
-        result = controller._api.execute_function_while_paused(
-            "recover_detector",
-            call_kwargs={"device_name": device_name, "retries": self._detector_retries},
-            progress_callback=lambda message, name=device_name: self._record_recovery_status(name, message),
-            result_context=device_name,
-            run_message=f"Resetting detector {device_name}",
-        )
-        return dict(result) if isinstance(result, Mapping) else {
-            "device": device_name,
-            "success": bool(result is not None),
-            "result": result,
-        }
+            return
+        self._detector_recovery_in_progress.add(device_name)
+        self._record_recovery_status(device_name, "Starting detector recovery")
+
+        def request(progress_callback):
+            return controller._api.execute_function_while_paused(
+                "recover_detector",
+                call_kwargs={"device_name": device_name, "retries": self._detector_retries},
+                progress_callback=progress_callback,
+                result_context=device_name,
+                run_message=f"Resetting detector {device_name}",
+            )
+
+        self._start_action_worker(("detector", device_name), request)
+
+    def _start_action_worker(self, context, request) -> None:
+        controller = self._controller
+        if controller is None:
+            return
+        worker = _ActionRequest(controller, context, request)
+        worker.signals.progress.connect(self._handle_action_progress)
+        worker.signals.result.connect(self._handle_action_result)
+        worker.signals.failed.connect(self._handle_action_failed)
+        self._action_pool.start(worker)
+
+    def _handle_action_progress(self, controller, context, message: str) -> None:
+        if controller is not self._controller:
+            return
+        kind, name = context
+        self._record_recovery_status(name, message)
+
+    def _handle_action_result(self, controller, context, result) -> None:
+        if controller is not self._controller:
+            return
+        kind, name = context
+        if kind == "detector":
+            self._detector_recovery_in_progress.discard(name)
+            result = result if isinstance(result, Mapping) else {
+                "success": bool(result is not None),
+                "result": result,
+            }
+            if result.get("success"):
+                self._last_recovery_at[name] = datetime.now()
+                self._record_recovery_status(name, "Detector recovery complete")
+                emit_status(f"{name} detector recovery commands sent")
+                self._set_error(None)
+            else:
+                reason = result.get("reason") or result.get("error") or "unknown error"
+                self._record_recovery_status(name, f"Detector recovery failed: {reason}")
+                self._set_error(f"{name} recovery failed: {reason}")
+                emit_status(f"{name} detector recovery failed")
+            self.refresh()
+            return
+
+        self._monitor_actions_in_progress.discard(name)
+        button = self._action_buttons.get(name)
+        if button is not None:
+            button.setEnabled(True)
+        if isinstance(result, Mapping) and not result.get("success", True):
+            reason = result.get("reason") or result.get("error") or "unknown error"
+            self._record_recovery_status(name, f"Action failed: {reason}")
+            self._set_error(f"{name} failed: {reason}")
+            emit_status(f"{name} failed")
+        else:
+            self._record_recovery_status(name, "Action complete")
+            self._set_error(None)
+            emit_status(f"{name} complete")
+        self.refresh()
+
+    def _handle_action_failed(self, controller, context, error: str) -> None:
+        if controller is not self._controller:
+            return
+        kind, name = context
+        if kind == "detector":
+            self._detector_recovery_in_progress.discard(name)
+            self._record_recovery_status(name, f"Detector recovery failed: {error}")
+            self._set_error(f"{name} recovery failed: {error}")
+            emit_status(f"{name} detector recovery failed")
+        else:
+            self._monitor_actions_in_progress.discard(name)
+            button = self._action_buttons.get(name)
+            if button is not None:
+                button.setEnabled(True)
+            self._record_recovery_status(name, f"Action failed: {error}")
+            self._set_error(f"{name} failed: {error}")
+            emit_status(f"{name} failed")
+        self.refresh()
 
     def _populate_device_overview(self, devices: Mapping[str, Any], *, snapshot: Mapping[str, Any] | None = None) -> None:
         while self._device_overview_layout.count():
@@ -526,32 +633,28 @@ class BeamlineMonitorWidget(QWidget):
         if controller is None:
             self._set_error(f"No QServer controller available for {action.text}")
             return
+        if action.text in self._monitor_actions_in_progress:
+            return
+        self._monitor_actions_in_progress.add(action.text)
+        button = self._action_buttons.get(action.text)
+        if button is not None:
+            button.setEnabled(False)
         self._record_recovery_status(action.text, "Starting action")
         emit_status(f"Running {action.text}")
-        result = controller._api.execute_function_while_paused(
-            action.qserver_function,
-            call_kwargs=action.call_kwargs,
-            user_group=action.user_group,
-            timeout=action.timeout,
-            progress_callback=lambda message, name=action.text: self._record_recovery_status(name, message),
-            result_context=action.text,
-            run_message=f"Running {action.text}",
-            wait_for_inner_scan_finish=action.wait_for_inner_scan_finish,
-        )
-        if isinstance(result, Mapping) and not result.get("success", True):
-            self._record_recovery_status(
-                action.text,
-                f"Action failed: {result.get('reason') or result.get('error') or 'unknown error'}",
+
+        def request(progress_callback):
+            return controller._api.execute_function_while_paused(
+                action.qserver_function,
+                call_kwargs=action.call_kwargs,
+                user_group=action.user_group,
+                timeout=action.timeout,
+                progress_callback=progress_callback,
+                result_context=action.text,
+                run_message=f"Running {action.text}",
+                wait_for_inner_scan_finish=action.wait_for_inner_scan_finish,
             )
-            self._set_error(
-                f"{action.text} failed: {result.get('reason') or result.get('error') or 'unknown error'}"
-            )
-            emit_status(f"{action.text} failed")
-        else:
-            self._record_recovery_status(action.text, "Action complete")
-            self._set_error(None)
-            emit_status(f"{action.text} complete")
-        self.refresh()
+
+        self._start_action_worker(("monitor", action.text), request)
 
     def _run_auto_monitor_actions(self, snapshot: Mapping[str, Any]) -> None:
         for action in self._actions:

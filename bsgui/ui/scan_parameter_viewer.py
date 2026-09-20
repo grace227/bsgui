@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from .base_loader import BaseLoaderWidget
 from .qtable_controls import export_qtable_to_csv
+from ..core.thread_status import register_qt_thread
 
 
 class _ScanParameterLoaderWorker(QObject):
@@ -202,6 +203,7 @@ class ScanParameterViewerWidget(BaseLoaderWidget):
         self._set_status(f"Loading {len(files)} file(s) from {directory}", icon="loading")
 
         self._loader_thread = QThread(self)
+        register_qt_thread("scan-parameter-loader", self._loader_thread, "ScanParameterViewerWidget")
         self._loader_worker = _ScanParameterLoaderWorker(
             directory=directory,
             files=files,

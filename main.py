@@ -11,11 +11,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import List, Optional
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QMessageBox, QTabWidget
 
 from bsgui.config.defaults import register_default_widgets
 from bsgui.config.registry import WidgetRegistry, registry
 from bsgui.ui.status_bus import get_status_bus, emit_status
+from bsgui.core.thread_status import describe_workers
 
 
 DEFAULT_WIDGET_KEYS = ["scan_setup", "qserver_monitor"]
@@ -147,6 +148,14 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(window_title)
         self.statusBar().showMessage((status_messages or {}).get("idle", "Ready."))
         get_status_bus().message.connect(self.statusBar().showMessage)
+        self._thread_status_label = QLabel()
+        self._thread_status_label.setMinimumWidth(170)
+        self.statusBar().addPermanentWidget(self._thread_status_label, 1)
+        self._thread_status_timer = QTimer(self)
+        self._thread_status_timer.setInterval(1000)
+        self._thread_status_timer.timeout.connect(self._update_thread_status)
+        self._thread_status_timer.start()
+        self._update_thread_status()
 
         tabs = QTabWidget()
         for tab_config in tab_configs:
@@ -171,6 +180,9 @@ class MainWindow(QMainWindow):
                 tabs.setTabToolTip(index, tooltip)
 
         self.setCentralWidget(tabs)
+
+    def _update_thread_status(self) -> None:
+        self._thread_status_label.setText(describe_workers())
 
 
 def parse_args(argv: List[str]) -> argparse.Namespace:

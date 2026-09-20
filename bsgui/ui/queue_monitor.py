@@ -44,6 +44,7 @@ QUEUE_ITEM_KWARG_KEY_ROLE = Qt.ItemDataRole.UserRole + 4
 DERIVED_QUEUE_COLUMNS = {"scan_size", "duration_min", "time_estimate"}
 
 from ..core.qserver_controller import PlanDefinition, QServerController, QueueSnapshot
+from ..core.thread_status import register_thread_pool
 from ..core.queue_item_utils import (
     apply_item_edit,
     build_update_payload,
@@ -116,6 +117,7 @@ class QueueMonitorWidget(QWidget):
         self._resume_enabled_after_pause = False
         self._worker_environment_state: Optional[str] = None
         self._request_pool = QThreadPool(self)
+        register_thread_pool("queue", self._request_pool, "QueueMonitorWidget")
         self._plan_request_in_progress = False
         self._snapshot_request_in_progress = False
 

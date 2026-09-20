@@ -28,6 +28,7 @@ from ..core.batch_generation import (
 )
 from ..core.plan_time import estimate_plan_time
 from ..core.qserver_controller import PlanDefinition, PlanParameter
+from ..core.thread_status import register_qt_thread
 from .qserver_planning import emit_plan_added
 from .plan_editor_extra import PlanEditorExtraPanel
 from .plan_editor_utils import (
@@ -736,6 +737,7 @@ class PlanEditorWidget(QWidget):
         self._set_status(f"Generating {len(iterate_values)} batch plan(s) for '{definition.name}'...", error=False)
 
         self._batch_thread = QThread(self)
+        register_qt_thread("batch-generation", self._batch_thread, "PlanEditorWidget")
         self._batch_worker = BatchGenerationWorker(
             api=api,
             plan_name=definition.name,

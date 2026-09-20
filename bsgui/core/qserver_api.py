@@ -63,6 +63,12 @@ class QServerAPI(REManagerAPI):
 
     def __init__(self, *args, **kwargs) -> None:
         self._beamline_monitor_manifest_path = kwargs.pop("beamline_monitor_manifest_path", None)
+        logged_qserver_functions = kwargs.pop("logged_qserver_functions", None)
+        self._logged_qserver_functions = (
+            None
+            if logged_qserver_functions is None
+            else frozenset(logged_qserver_functions)
+        )
         super().__init__(*args, **kwargs)
         self._rm_status = {}
         self._save_data_path = None
@@ -224,6 +230,13 @@ class QServerAPI(REManagerAPI):
 
     def _log_qserver_call(self, function_name: str, **kwargs: Any) -> None:
         """Log in the QServer save directory, falling back to the active directory."""
+        # Resolving the save path is itself a QServer call, so skip it for
+        # functions that are not enabled in the widget configuration.
+        if (
+            self._logged_qserver_functions is not None
+            and function_name not in self._logged_qserver_functions
+        ):
+            return
         log_directory = get_active_log_directory()
         if log_directory is None and function_name != "get_save_data_path":
             try:

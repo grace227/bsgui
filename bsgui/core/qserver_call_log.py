@@ -84,7 +84,10 @@ def get_active_log_directory() -> Path | None:
 def _display(value: Any) -> str:
     """Format call data compactly while handling scientific-Python objects."""
     try:
-        return pformat(value, sort_dicts=False, compact=True)
+        formatted = pformat(value, sort_dicts=False, compact=True, width=100_000)
+        # Keep one QServer call on one physical log line.  ``pformat`` may
+        # otherwise insert newlines for nested dictionaries.
+        return " ".join(line.strip() for line in formatted.splitlines())
     except Exception:
         return repr(value)
 
