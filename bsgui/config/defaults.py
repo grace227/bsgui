@@ -96,22 +96,6 @@ def _import_callable(path: str) -> Callable:
     return loaded
 
 
-def _collect_qserver_functions(value: object) -> set[str]:
-    """Collect QServer function names from nested widget configuration."""
-
-    functions: set[str] = set()
-    if isinstance(value, Mapping):
-        function_name = value.get("qserver_function")
-        if isinstance(function_name, str) and function_name.strip():
-            functions.add(function_name.strip())
-        for child in value.values():
-            functions.update(_collect_qserver_functions(child))
-    elif isinstance(value, (list, tuple)):
-        for child in value:
-            functions.update(_collect_qserver_functions(child))
-    return functions
-
-
 def _parse_plan_definitions(config: Iterable[dict]) -> List[PlanDefinition]:
     definitions: List[PlanDefinition] = []
     for entry in config:
@@ -165,8 +149,6 @@ def register_default_widgets(
 
     viewer_cfg = data_viewer_options or {}
     beamline_monitor_cfg = beamline_monitor_options or {}
-    logged_qserver_functions = _collect_qserver_functions(viewer_cfg)
-    logged_qserver_functions.update(_collect_qserver_functions(beamline_monitor_cfg))
     loader_cfg = viewer_cfg.get("loaders", {}) if isinstance(viewer_cfg.get("loaders"), dict) else {}
     try:
         roi_precision = max(0, int(viewer_cfg.get("roi_precision", 5)))
@@ -306,7 +288,6 @@ def register_default_widgets(
             api = QServerAPI(
                 zmq_control_addr=control_address,
                 zmq_info_addr=info_address,
-                logged_qserver_functions=logged_qserver_functions,
                 beamline_monitor_manifest_path=(
                     beamline_monitor_cfg
                 ).get("manifest_path"),

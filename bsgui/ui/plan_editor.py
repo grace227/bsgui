@@ -82,11 +82,6 @@ class BatchGenerationWorker(QObject):
         self._sync_inputs = dict(sync_inputs or {})
 
     def run(self) -> None:
-        logging_context_factory = getattr(self._api, "batch_logging_context", None)
-        if callable(logging_context_factory):
-            with logging_context_factory():
-                self._run_batch()
-            return
         self._run_batch()
 
     def _run_batch(self) -> None:
