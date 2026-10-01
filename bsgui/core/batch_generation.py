@@ -69,6 +69,9 @@ def execute_iteration_action(
         input_map = {}
 
     call_kwargs: Dict[str, object] = {}
+    static_kwargs = spec.get("call_kwargs")
+    if isinstance(static_kwargs, Mapping):
+        call_kwargs.update({str(key): value for key, value in static_kwargs.items()})
     for arg_name, source_name in input_map.items():
         if not isinstance(arg_name, str) or not isinstance(source_name, str):
             continue

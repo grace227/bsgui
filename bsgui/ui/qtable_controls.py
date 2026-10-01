@@ -9,16 +9,19 @@ from PySide6.QtCore import QEvent, QObject, Qt, QRegularExpression
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
+    QPushButton,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtGui import QRegularExpressionValidator
@@ -156,6 +159,53 @@ class QueueTableCursorController(QObject):
         table.setDragDropMode(QAbstractItemView.NoDragDrop)
         table.setContextMenuPolicy(Qt.CustomContextMenu)
         table.customContextMenuRequested.connect(self._handle_context_menu)
+        header = table.horizontalHeader()
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._handle_header_context_menu)
+
+    def _handle_header_context_menu(self, position) -> None:
+        table = self._table
+        if table is None or not Shiboken.isValid(table) or table.columnCount() == 0:
+            return
+        header = table.horizontalHeader()
+        menu = QMenu(table)
+
+        panel = QWidget(menu)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(8, 8, 8, 8)
+        panel_layout.setSpacing(4)
+        checkboxes = []
+        for column_index in range(table.columnCount()):
+            header_item = table.horizontalHeaderItem(column_index)
+            label = header_item.text() if header_item is not None else f"Column {column_index + 1}"
+            checkbox = QCheckBox(label, panel)
+            checkbox.setChecked(not table.isColumnHidden(column_index))
+            panel_layout.addWidget(checkbox)
+            checkboxes.append((column_index, checkbox))
+
+        button_layout = QHBoxLayout()
+        select_all = QPushButton("Select All", panel)
+        uncheck_all = QPushButton("Uncheck All", panel)
+        apply_button = QPushButton("Apply", panel)
+        button_layout.addWidget(select_all)
+        button_layout.addWidget(uncheck_all)
+        button_layout.addWidget(apply_button)
+        panel_layout.addLayout(button_layout)
+
+        select_all.clicked.connect(lambda: [checkbox.setChecked(True) for _, checkbox in checkboxes])
+        uncheck_all.clicked.connect(lambda: [checkbox.setChecked(False) for _, checkbox in checkboxes])
+
+        def apply_visibility() -> None:
+            for column_index, checkbox in checkboxes:
+                table.setColumnHidden(column_index, not checkbox.isChecked())
+            menu.close()
+
+        apply_button.clicked.connect(apply_visibility)
+
+        widget_action = QWidgetAction(menu)
+        widget_action.setDefaultWidget(panel)
+        menu.addAction(widget_action)
+        menu.exec(header.mapToGlobal(position))
 
     def _update_drag_state(self) -> None:
         table = self._table

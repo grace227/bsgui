@@ -93,12 +93,22 @@ class QueueMonitorWidget(QWidget):
         controller: Optional[QServerController] = None,
         roi_key_map: Optional[Mapping[str, Sequence[str]]] = None,
         columns: Optional[Sequence[Mapping[str, Any]]] = None,
+        planning_column_order: Optional[Sequence[str]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
 
         self._controller: Optional[QServerController] = None
         self._roi_key_map = normalize_roi_map(roi_key_map)
+        self._configured_columns = [
+            {
+                "id": str(entry.get("id")),
+                "label": str(entry.get("label") or entry.get("id")),
+                "stretch": bool(entry.get("stretch", False)),
+            }
+            for entry in (columns or [])
+            if isinstance(entry, Mapping) and entry.get("id")
+        ]
         self._roi_value_aliases = {
             alias for values in self._roi_key_map.values() for alias in values if alias != "title"
         }
@@ -200,7 +210,11 @@ class QueueMonitorWidget(QWidget):
         self._status_label.setObjectName("queueStatusLabel")
         self._status_label.setWordWrap(True)
         layout.addWidget(self._scan_monitor)
-        self._planning_widget = QServerPlanningWidget(controller=controller, layout=layout)
+        self._planning_widget = QServerPlanningWidget(
+            controller=controller,
+            layout=layout,
+            planning_column_order=planning_column_order,
+        )
 
 
         if controller is not None:
@@ -954,6 +968,7 @@ class QueueMonitorWidget(QWidget):
     def _configure_queue_table(self, minimum_section_size: float = 90) -> None:
         header = self._queue_table.horizontalHeader()
         header.setStretchLastSection(False)
+        header.setSectionsMovable(True)
         header.setSectionResizeMode(QHeaderView.Stretch)
         vertical_header = self._queue_table.verticalHeader()
         vertical_header.setSectionResizeMode(QHeaderView.Stretch)
@@ -986,6 +1001,9 @@ class QueueMonitorWidget(QWidget):
         add("time_start", "Start Time")
         add("scan_ids", "Scan ID")
 
+        for entry in self._configured_columns:
+            add(entry["id"], entry["label"])
+
         # ROI mapped columns in declared order
         for key in self._roi_key_map.keys():
             if key == "title":
@@ -1009,6 +1027,8 @@ class QueueMonitorWidget(QWidget):
                     kwargs_sources.append(nested_kwargs)
             for mapping in kwargs_sources:
                 for key in mapping.keys():
+                    if str(key) in {"status", "state"}:
+                        continue
                     if key in self._roi_value_aliases:
                         continue
                     label = str(key).replace("_", " ").title()

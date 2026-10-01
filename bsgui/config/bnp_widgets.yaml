@@ -36,9 +36,14 @@ tabs:
           search_paths:
             - ./data/img.dat
           mda_file_patterns:
-            - "2xfm_{scan_number:04d}.mda"
+            - "bnp_fly{scan_number:04d}.mda"
       plan_editor:
         enabled: true
+        planning_column_order:
+          - "{iterate_variable}"
+          - x_center
+          - y_center
+          - sample_z
         kinds:
           - single
           - batch
@@ -54,15 +59,13 @@ tabs:
                 theta:
                   text: Batch theta transform
                   qserver_function: syncXYZ_transform
+                  call_kwargs:
+                    require_theta_zero: false
                   input_map:
                     x: x0
                     y: y0
                     z: z0
                     theta: __iterate_value__
-                  sync_input_map:
-                    x0: x
-                    y0: y
-                    z0: z
                   result_target: parameters
             - name: iterate_starting_value
               description: Starting value of the iterate variable
@@ -129,12 +132,26 @@ tabs:
           - text: sync XYZ
             qserver_function: syncXYZ
             result_keys:
-              - x0
-              - y0
-              - z0
-            result_target: inputs
+              - x
+              - y
+              - z
+              - theta
+            result_target: parameters
+            input_result_behavior:
+              condition_key: theta
+              zero_tolerance: 0.2
+              zero_updates:
+                x0: x
+                y0: y
+                z0: z
+              nonzero_reset:
+                - x0
+                - y0
+                - z0
           - text: sync XYZ + transform
             qserver_function: syncXYZ_transform
+            call_kwargs:
+              require_theta_zero: true
             input_map:
               x: x0
               y: y0
@@ -284,13 +301,16 @@ tabs:
         type: zmq
         endpoints:
           info_env_var: QSERVER_ZMQ_INFO_ADDRESS
-          control_env_var: QSERVER_ZMQ_CONTROL_ADDRESS
+      control_env_var: QSERVER_ZMQ_CONTROL_ADDRESS
       columns:
-        - id: index
-          label: ID
+        - id: x0
+          label: x0
           stretch: true
-        - id: state
-          label: Status
+        - id: y0
+          label: y0
+          stretch: true
+        - id: z0
+          label: z0
           stretch: true
 
   - key: scan_monitor

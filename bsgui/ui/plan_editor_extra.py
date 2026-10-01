@@ -28,7 +28,9 @@ class SyncAction:
     transform: Optional[Mapping[str, object]] = None
     parameter_map: Optional[Mapping[str, str]] = None
     input_map: Optional[Mapping[str, str]] = None
+    call_kwargs: Optional[Mapping[str, object]] = None
     result_target: str = "parameters"
+    input_result_behavior: Optional[Mapping[str, object]] = None
     user_group: str = "root"
     timeout: float = 5.0
 
@@ -141,7 +143,17 @@ class PlanEditorExtraPanel(QWidget):
             if isinstance(entry.get("input_map"), Mapping)
             else None
         )
+        call_kwargs = (
+            {str(key): value for key, value in entry.get("call_kwargs", {}).items()}
+            if isinstance(entry.get("call_kwargs"), Mapping)
+            else None
+        )
         result_target = entry.get("result_target") if isinstance(entry.get("result_target"), str) else "parameters"
+        input_result_behavior = (
+            {str(key): value for key, value in entry.get("input_result_behavior", {}).items()}
+            if isinstance(entry.get("input_result_behavior"), Mapping)
+            else None
+        )
         user_group = entry.get("user_group") if isinstance(entry.get("user_group"), str) else "root"
         timeout = float(entry.get("timeout", 5.0))
         return SyncAction(
@@ -151,7 +163,9 @@ class PlanEditorExtraPanel(QWidget):
             transform=transform,
             parameter_map=parameter_map,
             input_map=input_map,
+            call_kwargs=call_kwargs,
             result_target=result_target,
+            input_result_behavior=input_result_behavior,
             user_group=user_group,
             timeout=timeout,
         )
@@ -201,6 +215,7 @@ class PlanEditorExtraPanel(QWidget):
         if not payload:
             self._set_status_callback(f"No sync data returned from '{action.qserver_function}'", True)
             return
+        self._apply_input_result_behavior(payload, action.input_result_behavior)
         if action.result_target == "inputs":
             self._apply_sync_result_to_inputs(payload)
         else:
@@ -214,6 +229,8 @@ class PlanEditorExtraPanel(QWidget):
         overrides: Optional[Mapping[str, object]] = None,
     ) -> Optional[Dict[str, object]]:
         kwargs: Dict[str, object] = {}
+        if action.call_kwargs:
+            kwargs.update(action.call_kwargs)
         if action.input_map:
             for arg_name, source_name in action.input_map.items():
                 value = overrides.get(source_name) if overrides and source_name in overrides else self._read_sync_input_value(source_name)
@@ -258,6 +275,44 @@ class PlanEditorExtraPanel(QWidget):
             if widget is not None:
                 widget.setStyleSheet(SYNC_VALUE_STYLE)
                 widget.setText(str(value))
+
+    def _apply_input_result_behavior(
+        self,
+        payload: Mapping[str, object],
+        behavior: Optional[Mapping[str, object]],
+    ) -> None:
+        if not isinstance(behavior, Mapping):
+            return
+        condition_key = behavior.get("condition_key")
+        if not isinstance(condition_key, str) or condition_key not in payload:
+            return
+        try:
+            condition_value = float(payload[condition_key])
+            zero_tolerance = abs(float(behavior.get("zero_tolerance", 0.0)))
+        except (TypeError, ValueError):
+            return
+        condition_is_zero = abs(condition_value) <= zero_tolerance
+
+        if condition_is_zero:
+            updates = behavior.get("zero_updates")
+            if not isinstance(updates, Mapping):
+                return
+            translated = {
+                str(target): payload[source]
+                for target, source in updates.items()
+                if isinstance(target, str) and isinstance(source, str) and source in payload
+            }
+            self._apply_sync_result_to_inputs(translated)
+            return
+
+        reset_inputs = behavior.get("nonzero_reset")
+        if not isinstance(reset_inputs, Sequence) or isinstance(reset_inputs, (str, bytes)):
+            return
+        for name in reset_inputs:
+            widget = self._sync_input_widgets.get(str(name))
+            if widget is not None:
+                widget.clear()
+                widget.setStyleSheet(DEFAULT_DISABLED_STYLE)
 
     def apply_sync_result_to_inputs(
         self,

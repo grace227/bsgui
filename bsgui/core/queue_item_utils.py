@@ -112,6 +112,7 @@ def extract_item_field(item: Mapping[str, Any], key: str) -> Any:
         item.get("kwargs"),
         item.get("result"),
         item.get("metadata"),
+        item.get("meta"),
         item.get("item"),
     ):
         if isinstance(candidate, Mapping):
@@ -330,6 +331,11 @@ def apply_item_edit(
     if set_if_exists(item, column_id, value):
         return True
 
+    meta = item.get("meta")
+    if isinstance(meta, MutableMapping) and column_id in meta:
+        meta[column_id] = value
+        return True
+
     kwargs = item.get("kwargs")
     if isinstance(kwargs, MutableMapping) and column_id in kwargs:
         kwargs[column_id] = value
@@ -420,12 +426,26 @@ def build_update_payload(
     # print(f"param_lookup: {param_lookup}")
     # print(f"exclude: {exclude}")
     kwargs = ensure_kwargs_container(payload)
+    meta = payload.get("meta")
+    meta = meta if isinstance(meta, MutableMapping) else {}
+    if meta:
+        payload["meta"] = meta
 
     # Start from existing kwargs so we remove blanked entries.
     updates = {}
     removals: set[str] = set()
     for key, value in row_values.items():
         if key in exclude:
+            continue
+        if key in meta:
+            if isinstance(value, str) and value.strip() == "":
+                meta.pop(key, None)
+            else:
+                meta[key] = value
+            continue
+        # Queue-table display columns such as index and state are not plan
+        # parameters and must never be copied into plan kwargs.
+        if key not in param_lookup and key not in kwargs:
             continue
         if isinstance(value, str) and value.strip() == "":
             removals.add(key)

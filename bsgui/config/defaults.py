@@ -478,7 +478,12 @@ def register_default_widgets(
         )
     )
 
-    allowed_qserver_kwargs = {"poll_interval_ms", "roi_key_map", "columns"}
+    allowed_qserver_kwargs = {
+        "poll_interval_ms",
+        "roi_key_map",
+        "columns",
+        "planning_column_order",
+    }
     q_kwargs = {
         key: value
         for key, value in (qserver_kwargs or {}).items()
@@ -492,6 +497,12 @@ def register_default_widgets(
         monitor_kwargs.setdefault("controller", controller)
         if roi_key_map and "roi_key_map" not in monitor_kwargs:
             monitor_kwargs["roi_key_map"] = roi_key_map
+        if plan_editor_cfg and "planning_column_order" not in monitor_kwargs:
+            configured_order = plan_editor_cfg.get("planning_column_order")
+            if isinstance(configured_order, Sequence) and not isinstance(configured_order, (str, bytes)):
+                monitor_kwargs["planning_column_order"] = tuple(
+                    str(key) for key in configured_order if isinstance(key, str)
+                )
         widget = QueueMonitorWidget(**monitor_kwargs)
         controller.start_polling()
         return widget

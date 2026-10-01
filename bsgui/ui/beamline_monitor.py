@@ -435,6 +435,7 @@ class BeamlineMonitorWidget(QWidget):
             return
         devices = snapshot.get("devices")
         devices = dict(devices) if isinstance(devices, Mapping) else {}
+        now = datetime.now()
         for device_name, device in devices.items():
             if not isinstance(device, Mapping) or not self._device_supports_recovery(device_name, device):
                 continue

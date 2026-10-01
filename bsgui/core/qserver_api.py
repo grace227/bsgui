@@ -347,6 +347,7 @@ class QServerAPI(REManagerAPI):
         y: object | None = None,
         z: object | None = None,
         theta: object | None = None,
+        require_theta_zero: bool = False,
         timeout: float = 30.0,
     ) -> Any:
         call_kwargs: Dict[str, Any] = {}
@@ -358,6 +359,7 @@ class QServerAPI(REManagerAPI):
             call_kwargs["z"] = z
         if theta is not None:
             call_kwargs["theta"] = theta
+        call_kwargs["require_theta_zero"] = bool(require_theta_zero)
         return self.execute_function("syncXYZ_transform", call_kwargs=call_kwargs, timeout=timeout)
 
     def recover_detector(

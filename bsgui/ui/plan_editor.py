@@ -133,6 +133,12 @@ class BatchGenerationWorker(QObject):
                         if isinstance(target, str) and isinstance(source, str) and source in payload:
                             self._sync_inputs[target] = payload[source]
 
+            queue_item["_bsgui_display_kwargs"] = {
+                name: self._sync_inputs[name]
+                for name in ("x0", "y0", "z0")
+                if name in self._sync_inputs
+            }
+
             generated += 1
             status = (
                 f"Added batch plan {generated}/{total}: "
@@ -652,6 +658,14 @@ class PlanEditorWidget(QWidget):
             self._set_status('No controller available to queue plan', error=True)
             return
 
+        sync_metadata = {
+            name: self._extra_panel.get_sync_input_value(name)
+            for name in ("x0", "y0", "z0")
+        }
+        sync_metadata = {name: value for name, value in sync_metadata.items() if value is not None}
+        if sync_metadata:
+            queue_item["meta"] = sync_metadata
+
         self._controller._api.item_add(queue_item)
         self._set_status(f"Plan '{definition.name}' queued")
 
@@ -737,6 +751,7 @@ class PlanEditorWidget(QWidget):
         self._set_status(f"Generating {len(iterate_values)} batch plan(s) for '{definition.name}'...", error=False)
 
         self._batch_thread = QThread(self)
+        self._batch_iterate_variable = iterate_variable
         register_qt_thread("batch-generation", self._batch_thread, "PlanEditorWidget")
         self._batch_worker = BatchGenerationWorker(
             api=api,
@@ -766,7 +781,7 @@ class PlanEditorWidget(QWidget):
         payload: Mapping[str, object],
         sync_inputs: Mapping[str, object],
     ) -> None:
-        emit_plan_added(queue_item)
+        emit_plan_added(queue_item, iterate_variable=self._batch_iterate_variable)
         if sync_inputs:
             self._extra_panel.apply_sync_result_to_inputs(sync_inputs)
         self._set_status(status, error=False)
