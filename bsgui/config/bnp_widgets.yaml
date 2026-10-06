@@ -20,6 +20,19 @@ tabs:
     options:
       roi_precision: 2
       point_precision: 2
+      # Estimated scan time settings. Add beamline-specific plan parameter
+      # names here instead of changing Python code. The estimate is:
+      # points * dwell_seconds + lines * line_overhead_seconds.
+      plan_time:
+        line_overhead_seconds: 2.5
+        aliases:
+          width:
+            - energy_width_keV
+          stepsize_x:
+            - energy_step_keV
+          dwell:
+            - dwell_s
+            - dwell_ms
       loaders:
         xrf:
           enabled: true
@@ -295,6 +308,7 @@ tabs:
       auto_connect: true
       show_completed_limit: 15
       progress:
+        mode: queue
         show_activity_indicator: true
         show_percentage: true
       client:

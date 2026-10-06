@@ -12,6 +12,10 @@ OUTER_PROGRESS_PATTERN = re.compile(
     r"Preparing stage to run .*? at ([^,]+),\s*(\d+)\s+of\s+(\d+)\s+angles"
 )
 SCAN_PROGRESS_PATTERN = re.compile(r"Scan_progress:\s*(\d{1,3}(?:\.\d+)?)%")
+SCAN_REMAINING_PATTERN = re.compile(
+    r"Scan_remaining\s*:\s*(-?\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
 PERCENT_PATTERN = re.compile(r"(\d{1,3})(?:\.\d+)?\s*%")
 FRACTION_PATTERN = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
 STATUS_PREFIXES = (
@@ -110,6 +114,17 @@ def extract_progress(console_text: str) -> Optional[int]:
     return None
 
 
+def extract_scan_remaining_seconds(console_text: str) -> Optional[float]:
+    """Extract the current scan's remaining time, reported in seconds."""
+    matches = SCAN_REMAINING_PATTERN.findall(console_text)
+    if not matches:
+        return None
+    try:
+        return max(0.0, float(matches[-1]))
+    except ValueError:
+        return None
+
+
 def update_scan_timing(
     console_text: str,
     state: ScanTimingState,
@@ -189,6 +204,7 @@ __all__ = [
     "extract_inner_status",
     "extract_outer_progress",
     "extract_progress",
+    "extract_scan_remaining_seconds",
     "extract_status",
     "format_eta",
     "render_progress_bar",

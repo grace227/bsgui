@@ -251,6 +251,9 @@ def register_default_widgets(
 
     plan_editor_cfg_raw = viewer_cfg.get("plan_editor")
     plan_editor_cfg = plan_editor_cfg_raw if isinstance(plan_editor_cfg_raw, dict) else None
+    plan_time_options = viewer_cfg.get("plan_time")
+    if not isinstance(plan_time_options, Mapping):
+        plan_time_options = None
     allowed_plans_cfg = plan_editor_cfg.get("allowed_plans") if plan_editor_cfg else None
 
     indicator_config: Optional[Mapping[str, Mapping[str, str]]] = None
@@ -342,6 +345,7 @@ def register_default_widgets(
                 roi_context_map=roi_context_map,
                 sync_buttons=sync_buttons,
                 sync_inputs=sync_inputs,
+                plan_time_options=plan_time_options,
             )
             if isinstance(plans_cfg, list):
                 definitions = _parse_plan_definitions(plans_cfg)
@@ -464,6 +468,8 @@ def register_default_widgets(
         "roi_key_map",
         "columns",
         "planning_column_order",
+        "plan_time_options",
+        "progress_mode",
     }
     q_kwargs = {
         key: value
@@ -484,6 +490,8 @@ def register_default_widgets(
                 monitor_kwargs["planning_column_order"] = tuple(
                     str(key) for key in configured_order if isinstance(key, str)
                 )
+        if plan_time_options is not None:
+            monitor_kwargs.setdefault("plan_time_options", plan_time_options)
         widget = QueueMonitorWidget(**monitor_kwargs)
         controller.start_polling()
         return widget

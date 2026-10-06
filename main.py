@@ -267,6 +267,11 @@ def main(argv: List[str]) -> int:
                 normalized_columns.append(dict(entry))
         if normalized_columns:
             qserver_kwargs["columns"] = normalized_columns
+    progress_cfg = qserver_options.get("progress")
+    if isinstance(progress_cfg, Mapping):
+        progress_mode = progress_cfg.get("mode")
+        if isinstance(progress_mode, str) and progress_mode.strip():
+            qserver_kwargs["progress_mode"] = progress_mode.strip().lower()
 
     register_default_widgets(
         data_paths=data_paths,

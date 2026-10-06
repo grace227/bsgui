@@ -182,6 +182,7 @@ tabs:
       auto_connect: true
       show_completed_limit: 15
       progress:
+        mode: angles
         show_activity_indicator: true
         show_percentage: true
       client:

@@ -15,7 +15,7 @@ class PlanTimeEstimate:
     scan_size: str | None
 
 
-OVERHEAD_FACTOR = 3.0
+LINE_OVERHEAD_SECONDS = 2.5
 
 _ALIASES = {
     "width": ("width", "width_mm", "length", "width_keV"),
@@ -31,25 +31,54 @@ _ALIASES = {
 }
 
 
+def _configured_aliases(
+    aliases: Mapping[str, Sequence[str]] | None,
+) -> dict[str, tuple[str, ...]]:
+    configured = dict(_ALIASES)
+    if not isinstance(aliases, Mapping):
+        return configured
+    for key, values in aliases.items():
+        if not isinstance(key, str) or not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        additions = tuple(str(value) for value in values if isinstance(value, str) and value)
+        if additions:
+            configured[key] = tuple(dict.fromkeys((*configured.get(key, ()), *additions)))
+    return configured
+
+
 def estimate_plan_time(
     plan_name: str,
     values: Mapping[str, object],
     *,
     kind: str = "single",
-    overhead_factor: float = OVERHEAD_FACTOR,
+    line_overhead_seconds: float = LINE_OVERHEAD_SECONDS,
+    aliases: Mapping[str, Sequence[str]] | None = None,
 ) -> PlanTimeEstimate:
     """Estimate scan duration and point shape from plan parameter values."""
 
+    configured_aliases = _configured_aliases(aliases)
+
     if kind == "batch":
-        return _estimate_batch_plan(plan_name, values, overhead_factor=overhead_factor)
-    return _estimate_single_plan(plan_name, values, overhead_factor=overhead_factor)
+        return _estimate_batch_plan(
+            plan_name,
+            values,
+            line_overhead_seconds=line_overhead_seconds,
+            aliases=configured_aliases,
+        )
+    return _estimate_single_plan(
+        plan_name,
+        values,
+        line_overhead_seconds=line_overhead_seconds,
+        aliases=configured_aliases,
+    )
 
 
 def _estimate_batch_plan(
     plan_name: str,
     values: Mapping[str, object],
     *,
-    overhead_factor: float,
+    line_overhead_seconds: float,
+    aliases: Mapping[str, Sequence[str]],
 ) -> PlanTimeEstimate:
     iterate_variable = _string_value(values.get("iterate_variable"))
     start = _float_value(values.get("iterate_starting_value"))
@@ -62,7 +91,12 @@ def _estimate_batch_plan(
     }
 
     if not iterate_variable or start is None or end is None or step in (None, 0):
-        single = _estimate_single_plan(plan_name, base_values, overhead_factor=overhead_factor)
+        single = _estimate_single_plan(
+            plan_name,
+            base_values,
+            line_overhead_seconds=line_overhead_seconds,
+            aliases=aliases,
+        )
         return PlanTimeEstimate(single.seconds, single.scan_size)
 
     try:
@@ -76,7 +110,14 @@ def _estimate_batch_plan(
     for iterate_value in iterate_values:
         item_values = dict(base_values)
         item_values[iterate_variable] = iterate_value
-        estimates.append(_estimate_single_plan(plan_name, item_values, overhead_factor=overhead_factor))
+        estimates.append(
+            _estimate_single_plan(
+                plan_name,
+                item_values,
+                line_overhead_seconds=line_overhead_seconds,
+                aliases=aliases,
+            )
+        )
 
     seconds = None
     if all(estimate.seconds is not None for estimate in estimates):
@@ -97,10 +138,15 @@ def _estimate_single_plan(
     plan_name: str,
     values: Mapping[str, object],
     *,
-    overhead_factor: float,
+    line_overhead_seconds: float,
+    aliases: Mapping[str, Sequence[str]],
 ) -> PlanTimeEstimate:
     if "coarse_fine" in plan_name:
-        coarse = _estimate_scan(values, overhead_factor=overhead_factor)
+        coarse = _estimate_scan(
+            values,
+            line_overhead_seconds=line_overhead_seconds,
+            aliases=aliases,
+        )
         fine = _estimate_scan(
             values,
             width_key="width_fine",
@@ -108,7 +154,8 @@ def _estimate_single_plan(
             stepsize_x_key="stepsize_x_fine",
             stepsize_y_key="stepsize_y_fine",
             dwell_key="dwell_fine",
-            overhead_factor=overhead_factor,
+            line_overhead_seconds=line_overhead_seconds,
+            aliases=aliases,
         )
         seconds = None
         if coarse.seconds is not None and fine.seconds is not None:
@@ -120,7 +167,11 @@ def _estimate_single_plan(
             sizes.append(f"fine {fine.scan_size}")
         return PlanTimeEstimate(seconds, "; ".join(sizes) if sizes else None)
 
-    return _estimate_scan(values, overhead_factor=overhead_factor)
+    return _estimate_scan(
+        values,
+        line_overhead_seconds=line_overhead_seconds,
+        aliases=aliases,
+    )
 
 
 def _estimate_scan(
@@ -131,13 +182,14 @@ def _estimate_scan(
     stepsize_x_key: str = "stepsize_x",
     stepsize_y_key: str = "stepsize_y",
     dwell_key: str = "dwell",
-    overhead_factor: float,
+    line_overhead_seconds: float,
+    aliases: Mapping[str, Sequence[str]],
 ) -> PlanTimeEstimate:
-    width = _value_for(values, width_key)
-    height = _value_for(values, height_key)
-    stepsize_x = _value_for(values, stepsize_x_key)
-    stepsize_y = _value_for(values, stepsize_y_key)
-    dwell_seconds = _dwell_seconds(values, dwell_key)
+    width = _value_for(values, width_key, aliases)
+    height = _value_for(values, height_key, aliases)
+    stepsize_x = _value_for(values, stepsize_x_key, aliases)
+    stepsize_y = _value_for(values, stepsize_y_key, aliases)
+    dwell_seconds = _dwell_seconds(values, dwell_key, aliases)
 
     x_pts = _point_count(width, stepsize_x)
     y_pts = _point_count(height, stepsize_y)
@@ -145,21 +197,34 @@ def _estimate_scan(
         return PlanTimeEstimate(None, None)
 
     point_count = x_pts if y_pts is None else x_pts * y_pts
-    seconds = point_count * dwell_seconds * overhead_factor if dwell_seconds is not None else None
+    line_count = y_pts if y_pts is not None else 1
+    seconds = (
+        point_count * dwell_seconds + line_count * line_overhead_seconds
+        if dwell_seconds is not None
+        else None
+    )
     scan_size = f"({x_pts},)" if y_pts is None else f"({x_pts}, {y_pts})"
     return PlanTimeEstimate(seconds, scan_size)
 
 
-def _value_for(values: Mapping[str, object], key: str) -> float | None:
-    for alias in _ALIASES.get(key, (key,)):
+def _value_for(
+    values: Mapping[str, object],
+    key: str,
+    aliases: Mapping[str, Sequence[str]],
+) -> float | None:
+    for alias in aliases.get(key, (key,)):
         value = _float_value(values.get(alias))
         if value is not None:
             return value
     return None
 
 
-def _dwell_seconds(values: Mapping[str, object], key: str) -> float | None:
-    for alias in _ALIASES.get(key, (key,)):
+def _dwell_seconds(
+    values: Mapping[str, object],
+    key: str,
+    aliases: Mapping[str, Sequence[str]],
+) -> float | None:
+    for alias in aliases.get(key, (key,)):
         value = _float_value(values.get(alias))
         if value is None:
             continue
@@ -192,4 +257,4 @@ def _string_value(value: object) -> str | None:
     return text or None
 
 
-__all__ = ["OVERHEAD_FACTOR", "PlanTimeEstimate", "estimate_plan_time"]
+__all__ = ["LINE_OVERHEAD_SECONDS", "PlanTimeEstimate", "estimate_plan_time"]

@@ -182,6 +182,7 @@ def resolve_queue_value(
     roi_value_aliases: set[str],
     available_params: Optional[set[str]] = None,
     running = False,
+    plan_time_options: Optional[Mapping[str, object]] = None,
 ) -> tuple[str, Optional[str]]:
 
     # if row_index == 10:
@@ -190,7 +191,13 @@ def resolve_queue_value(
     if column_id == "index":
         return str(row_index + 1), None
     if column_id in {"scan_size", "duration_min", "time_estimate"}:
-        estimate = estimate_plan_time(_extract_plan_name(item), _extract_plan_kwargs(item))
+        options = plan_time_options or {}
+        estimate = estimate_plan_time(
+            _extract_plan_name(item),
+            _extract_plan_kwargs(item),
+            line_overhead_seconds=options.get("line_overhead_seconds", 2.5),
+            aliases=options.get("aliases"),
+        )
         if column_id == "scan_size":
             return estimate.scan_size or "", None
         elapsed = _actual_elapsed_seconds(item)
@@ -272,6 +279,22 @@ def resolve_queue_value(
             return "", column_id
         return format_scalar(fallback), column_id
     return format_scalar(value), column_id
+
+
+def estimate_queue_item_seconds(
+    item: Mapping[str, Any],
+    *,
+    plan_time_options: Optional[Mapping[str, object]] = None,
+) -> Optional[float]:
+    """Estimate one queued plan's duration using the configured plan-time model."""
+    options = plan_time_options or {}
+    estimate = estimate_plan_time(
+        _extract_plan_name(item),
+        _extract_plan_kwargs(item),
+        line_overhead_seconds=options.get("line_overhead_seconds", 2.5),
+        aliases=options.get("aliases"),
+    )
+    return estimate.seconds
 
 
 def _extract_plan_name(item: Mapping[str, Any]) -> str:

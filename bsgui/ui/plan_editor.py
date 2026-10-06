@@ -97,6 +97,14 @@ class BatchGenerationWorker(QObject):
                 queue_item["kwargs"].get(self._iterate_variable),
                 iterate_value,
             )
+            if "user_comments" in queue_item["kwargs"]:
+                base_comment = str(queue_item["kwargs"].get("user_comments") or "").strip()
+                iteration_comment = f"{self._iterate_variable}={iterate_value}"
+                queue_item["kwargs"]["user_comments"] = (
+                    f"{base_comment}; {iteration_comment}"
+                    if base_comment
+                    else iteration_comment
+                )
             payload: Dict[str, object] = {}
 
             if self._iteration_action:
@@ -170,6 +178,7 @@ class PlanEditorWidget(QWidget):
         roi_context_map: Optional[Mapping[str, object]] = None,
         sync_buttons: Optional[Sequence[object]] = None,
         sync_inputs: Optional[Sequence[object]] = None,
+        plan_time_options: Optional[Mapping[str, object]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
 
@@ -188,8 +197,10 @@ class PlanEditorWidget(QWidget):
         self._selected_dataset: Dict[str, object] | None = None
         self._selected_dataset_values: Dict[str, object] = {}
         self._parameter_rows: Dict[str, ParameterRow] = {}
+        self._last_worker_status: Optional[str] = None
         self._roi_key_map = normalize_key_map(roi_key_map)
         self._roi_context_map = normalize_string_map(roi_context_map)
+        self._plan_time_options = dict(plan_time_options or {})
         self._batch_thread: Optional[QThread] = None
         self._batch_worker: Optional[BatchGenerationWorker] = None
 
@@ -303,15 +314,22 @@ class PlanEditorWidget(QWidget):
             self._selected_dataset_values = {}
 
     def handle_plans_update(self, worker_status: str) -> None:
-        if worker_status == "closed" or worker_status == "":
+        worker_status = worker_status or ""
+        previous_status = self._last_worker_status
+
+        if worker_status in {"closed", "initializing", ""}:
             self._plan_combo.blockSignals(True)
             self._plan_combo.clear()
             self._plan_combo.blockSignals(False)
             self._parameter_table.setRowCount(0)
             self._parameter_rows.clear()
-        elif any([worker_status == "idle",
-                  worker_status == "executing_plan"]) and self._plan_combo.count() == 0:
+        elif worker_status in {"idle", "executing_plan"} and (
+            self._plan_combo.count() == 0
+            or (worker_status == "idle" and previous_status == "initializing")
+        ):
             self.refresh_from_controller()
+
+        self._last_worker_status = worker_status
 
     def refresh_from_controller(self) -> None:
         if self._controller is None:
@@ -806,11 +824,19 @@ class PlanEditorWidget(QWidget):
     def _get_plan_estimate(self):
         definition = self.current_plan()
         if definition is None:
-            return estimate_plan_time("", {}, kind=self._current_kind)
+            return estimate_plan_time(
+                "",
+                {},
+                kind=self._current_kind,
+                line_overhead_seconds=self._plan_time_options.get("line_overhead_seconds", 2.5),
+                aliases=self._plan_time_options.get("aliases"),
+            )
         return estimate_plan_time(
             definition.name,
             self._collect_estimate_values(),
             kind=self._current_kind,
+            line_overhead_seconds=self._plan_time_options.get("line_overhead_seconds", 2.5),
+            aliases=self._plan_time_options.get("aliases"),
         )
 
     def _collect_estimate_values(self) -> Dict[str, object]:

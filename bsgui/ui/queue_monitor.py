@@ -49,6 +49,7 @@ from ..core.queue_item_utils import (
     apply_item_edit,
     build_update_payload,
     clone_item,
+    estimate_queue_item_seconds,
     extract_item_field,
     normalize_roi_map,
     prepare_display_item,
@@ -94,12 +95,15 @@ class QueueMonitorWidget(QWidget):
         roi_key_map: Optional[Mapping[str, Sequence[str]]] = None,
         columns: Optional[Sequence[Mapping[str, Any]]] = None,
         planning_column_order: Optional[Sequence[str]] = None,
+        plan_time_options: Optional[Mapping[str, object]] = None,
+        progress_mode: str = "angles",
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
 
         self._controller: Optional[QServerController] = None
         self._roi_key_map = normalize_roi_map(roi_key_map)
+        self._plan_time_options = dict(plan_time_options or {})
         self._configured_columns = [
             {
                 "id": str(entry.get("id")),
@@ -120,6 +124,9 @@ class QueueMonitorWidget(QWidget):
         self._pending_items: list[dict[str, Any]] = []
         self._completed_items: list[dict[str, Any]] = []
         self._running_item: dict[str, Any] = {}
+        self._queue_progress_total = 0
+        self._queue_progress_completed = 0
+        self._queue_progress_last_active = 0
         self._qtable_controls: Optional[QueueTableCursorController] = None
         self._suppress_item_changed = False
         self._pending_table_refresh = False
@@ -145,7 +152,7 @@ class QueueMonitorWidget(QWidget):
         )
         self._queue_table.itemChanged.connect(self._handle_item_changed)
 
-        self._scan_monitor = ScanMonitorWidget()
+        self._scan_monitor = ScanMonitorWidget(outer_progress_mode=progress_mode)
 
         self._completed_text_color = QColor("#5c5c5c")
         self._running_item_color = QColor("#2e7d32")
@@ -419,6 +426,7 @@ class QueueMonitorWidget(QWidget):
         self.update_completed(snapshot.completed or [])
         self.update_queue(snapshot.pending or [])
         self.update_active(snapshot.running, snapshot.progress)
+        self._update_queue_progress()
 
     # ------------------------------------------------------------------
     # View helpers
@@ -434,13 +442,50 @@ class QueueMonitorWidget(QWidget):
         item: Optional[Mapping[str, Any]],
         progress: Optional[int],
     ) -> None:
-        self._running_item = clone_item(item)
+        self._running_item = clone_item(item) if isinstance(item, Mapping) else {}
         self._refresh_queue_table()
 
     def update_completed(self, completed: Sequence[Mapping[str, Any]]) -> None:
         self._completed_items = [prepare_display_item(item, completed=True) for item in completed]
         self._completed_items = self._completed_items[::-1]
         self._refresh_queue_table()
+
+    def _update_queue_progress(self) -> None:
+        running_count = 1 if self._running_item else 0
+        active_count = len(self._pending_items) + running_count
+
+        if active_count == 0:
+            self._queue_progress_total = 0
+            self._queue_progress_completed = 0
+        elif self._queue_progress_total == 0:
+            self._queue_progress_total = active_count
+            self._queue_progress_completed = 0
+        else:
+            active_delta = active_count - self._queue_progress_last_active
+            if active_delta > 0:
+                self._queue_progress_total += active_delta
+            elif active_delta < 0:
+                self._queue_progress_completed = min(
+                    self._queue_progress_total,
+                    self._queue_progress_completed - active_delta,
+                )
+
+        self._queue_progress_last_active = active_count
+        pending_seconds = 0.0
+        has_pending_estimate = False
+        for item in self._pending_items:
+            seconds = estimate_queue_item_seconds(
+                item,
+                plan_time_options=self._plan_time_options,
+            )
+            if seconds is not None:
+                pending_seconds += seconds
+                has_pending_estimate = True
+        self._scan_monitor.set_queue_progress(
+            self._queue_progress_completed,
+            self._queue_progress_total,
+            pending_seconds if has_pending_estimate else None,
+        )
 
     def _update_queue_actions(self) -> None:
         api = self._require_queue_api(notify=False)
@@ -746,6 +791,7 @@ class QueueMonitorWidget(QWidget):
                         roi_value_aliases=self._roi_value_aliases,
                         available_params=param_names,
                         running=running,
+                        plan_time_options=self._plan_time_options,
                     )
 
                     cell = QTableWidgetItem(display_value)
@@ -1052,6 +1098,7 @@ class QueueMonitorWidget(QWidget):
             row_index,
             roi_key_map=self._roi_key_map,
             roi_value_aliases=self._roi_value_aliases,
+            plan_time_options=self._plan_time_options,
         )
         return text
 
